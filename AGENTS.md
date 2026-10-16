@@ -25,6 +25,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Don't build on `error_code`.** Paystack puts no code on the transaction, so the column stays empty.
 - **Known gateway strings are classified by rules** in `src/lib/gateway-rules.ts`, with no model call. Add a rule only for unambiguous text, and add a test case with it.
 - **Model calls go through `DiagnosisModel`** in `src/lib/diagnosis-model.ts`. Swap providers there; the classifier doesn't change.
+- **The default model is cheap on purpose:** `claude-haiku-5-5` at low effort. `DIAGNOSIS_MODEL=claude-opus-5-5` selects the frontier model. Refusal fallback stays on for both. Haiku has no server-side fallback, so a Haiku refusal is retried once on `claude-sonnet-5-5`.
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
 

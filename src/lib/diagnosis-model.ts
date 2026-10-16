@@ -35,27 +35,31 @@ gateway_response is the primary signal. If it describes a decline, the reason is
 
 confidence is your probability that the reason is right. Go below 0.5 when the evidence is thin, which it often is for the last three reasons. The rationale cites the facts you used and never speculates about who the customer is.`;
 
+// Cheap by default: the model only sees cases the rules can't decide, and
+// those are short classification calls. Set DIAGNOSIS_MODEL=claude-opus-5-5
+// for the frontier model.
+export const DEFAULT_DIAGNOSIS_MODEL = "claude-haiku-5-5";
+
+// Models that support Anthropic's server-side refusal fallback. Haiku does not:
+// a declined Haiku request stays declined, so refusals there are retried
+// client-side on REFUSAL_FALLBACK_MODEL instead.
+const SERVER_FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"]);
+export const REFUSAL_FALLBACK_MODEL = "claude-sonnet-5-5";
+
+type MessagesClient = Pick<Anthropic, "beta">;
+
 export class AnthropicDiagnosisModel implements DiagnosisModel {
   constructor(
-    private readonly client: Anthropic = new Anthropic(),
-    private readonly model = "claude-opus-5-5",
+    private readonly model: string = DEFAULT_DIAGNOSIS_MODEL,
+    private readonly client: MessagesClient = new Anthropic(),
   ) {}
 
   async classify(input: ModelInput): Promise<{ output: unknown; model: string }> {
-    const response = await this.client.beta.messages.create({
-      model: this.model,
-      max_tokens: 4096,
-      // Re-runs a safety-classifier refusal on Anthropic's recommended fallback model.
-      betas: ["server-side-fallback-2026-07-01"],
-      fallbacks: "default",
-      output_config: {
-        effort: "medium",
-        format: { type: "json_schema", schema: OUTPUT_SCHEMA },
-      },
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: `Diagnose this stalled payment:\n\n${JSON.stringify(input, null, 2)}` }],
-    });
+    let response = await this.request(this.model, input);
 
+    if (response.stop_reason === "refusal" && !SERVER_FALLBACK_MODELS.has(this.model)) {
+      response = await this.request(REFUSAL_FALLBACK_MODEL, input);
+    }
     if (response.stop_reason === "refusal") {
       throw new Error(`model refused (${response.stop_details?.category ?? "no category"})`);
     }
@@ -75,14 +79,34 @@ export class AnthropicDiagnosisModel implements DiagnosisModel {
     }
     return { output, model: `anthropic:${response.model}` };
   }
+
+  private request(model: string, input: ModelInput) {
+    const serverFallback = SERVER_FALLBACK_MODELS.has(model);
+    return this.client.beta.messages.create({
+      model,
+      // Thinking counts toward this; leave room beyond the short JSON answer.
+      max_tokens: 4096,
+      // Re-runs a safety-classifier refusal on Anthropic's recommended fallback model.
+      ...(serverFallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+      output_config: {
+        effort: model.startsWith("claude-haiku") ? "low" : "medium",
+        format: { type: "json_schema", schema: OUTPUT_SCHEMA },
+      },
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: `Diagnose this stalled payment:\n\n${JSON.stringify(input, null, 2)}` }],
+    });
+  }
 }
 
 // DIAGNOSIS_MODEL_PROVIDER selects the provider. Unset or "none" means no
 // model: only gateway_response rules run, and anything they can't classify is
-// left undiagnosed rather than guessed.
+// left undiagnosed rather than guessed. DIAGNOSIS_MODEL overrides the model id.
 export function getDiagnosisModel(): DiagnosisModel | null {
   const provider = (process.env.DIAGNOSIS_MODEL_PROVIDER ?? "").trim().toLowerCase();
   if (provider === "" || provider === "none") return null;
-  if (provider === "anthropic") return new AnthropicDiagnosisModel();
+  if (provider === "anthropic") {
+    const model = process.env.DIAGNOSIS_MODEL?.trim() || DEFAULT_DIAGNOSIS_MODEL;
+    return new AnthropicDiagnosisModel(model);
+  }
   throw new Error(`unknown DIAGNOSIS_MODEL_PROVIDER "${provider}"`);
 }
