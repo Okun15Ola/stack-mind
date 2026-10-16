@@ -18,6 +18,8 @@ export type VerifiedStall = {
   readonly id: string;
   readonly reference: string;
   readonly paystackStatus: string;
+  // gateway_response as Paystack reported it at verification time.
+  readonly gatewayResponse: string | null;
   readonly verifiedAt: Date;
 };
 
@@ -112,6 +114,7 @@ export async function reverifyStall(stallId: string): Promise<ReverifyResult> {
       id: stall.id,
       reference: stall.paystack_reference,
       paystackStatus: currentStatus,
+      gatewayResponse: tx.gateway_response ?? null,
       verifiedAt,
     } as VerifiedStall,
   };
