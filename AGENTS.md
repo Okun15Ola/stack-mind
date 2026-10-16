@@ -19,6 +19,15 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - The database enforces this independently. Inserting a diagnosis or an action, or moving an action to `executing`, is refused unless the stall was verified in the last 10 minutes and isn't resolved.
 - New actions default to `mode = 'dry_run'`. Nothing runs in `live` mode without explicit sign-off.
 
+### Diagnosis (`src/lib/diagnose.ts`)
+
+- **Classify on `gateway_response`, never on status or `abandoned_by`.** Paystack stores some declined cards as `abandoned` (real case `yi8ijvdw7mjns54`). Going by status, that reads as FORGOT when it's CARD_FAILING.
+- **Don't build on `error_code`.** Paystack puts no code on the transaction, so the column stays empty.
+- **Known gateway strings are classified by rules** in `src/lib/gateway-rules.ts`, with no model call. Add a rule only for unambiguous text, and add a test case with it.
+- **Model calls go through `DiagnosisModel`** in `src/lib/diagnosis-model.ts`. Swap providers there; the classifier doesn't change.
+- **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
+- **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
+
 ## Contributing
 
 **Never push to `main`.** Branch protection rejects direct pushes, and that's intended. Every change goes through a pull request that the repo owner reviews and merges.

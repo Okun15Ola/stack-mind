@@ -7,9 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "export:test-set": "node --env-file=.env.local scripts/export-test-set.mts"
+    "export:test-set": "node --env-file=.env.local scripts/export-test-set.mts",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "diagnose": "node --env-file=.env.local --import tsx scripts/diagnose-stall.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
     "@supabase/supabase-js": "^2.117.3",
     "next": "16.4.1",
     "react": "19.3.0",
@@ -23,6 +26,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }
