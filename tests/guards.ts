@@ -126,6 +126,7 @@ export function liveEntrypointViolations(list: readonly string[]): string[] {
 export const ENTRYPOINT_FILES: Record<string, string> = {
   [join("src", "app", "api", "cron", "poll-paystack", "route.ts")]: "poller",
   [join("src", "app", "api", "webhooks", "paystack", "route.ts")]: "webhook",
+  [join("scripts", "poll.ts")]: "poller",
   [join("scripts", "diagnose-stall.ts")]: "diagnose-stall",
   [join("scripts", "compare-models.ts")]: "compare-models",
   [join("scripts", "export-test-set.mts")]: "export-test-set",

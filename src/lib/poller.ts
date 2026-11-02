@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { listTransactions, stallFromTransaction, type StallRow } from "@/lib/paystack";
+import { SETTLED_STATUSES, listTransactions, stallFromTransaction, verifyTransaction, type StallRow } from "@/lib/paystack";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 const POLLER_ID = "paystack_transactions";
@@ -70,17 +70,7 @@ export async function pollPaystack(secretKey: string, now = new Date()): Promise
     }
     const rows = [...byReference.values()];
 
-    // ignoreDuplicates: a stall already captured (by webhook or an earlier
-    // poll) is left as is. The select returns only the newly inserted rows.
-    let inserted = 0;
-    for (let i = 0; i < rows.length; i += UPSERT_CHUNK) {
-      const { data, error } = await db
-        .from("stalls")
-        .upsert(rows.slice(i, i + UPSERT_CHUNK), { onConflict: "paystack_reference", ignoreDuplicates: true })
-        .select("paystack_reference");
-      if (error) throw new Error(`stalls upsert: ${error.message}`);
-      inserted += data?.length ?? 0;
-    }
+    const inserted = await insertStalls(rows);
 
     const { error: saveError } = await release({
       cursor: to.toISOString(),
@@ -101,4 +91,58 @@ export async function pollPaystack(secretKey: string, now = new Date()): Promise
     await release({ last_error: message.slice(0, 1000) });
     throw err;
   }
+}
+
+// ignoreDuplicates: a stall already captured (by webhook or an earlier poll)
+// is left as is. The select returns only the newly inserted rows. Writes only
+// to our own stalls table.
+async function insertStalls(rows: StallRow[]): Promise<number> {
+  const db = supabaseAdmin();
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += UPSERT_CHUNK) {
+    const { data, error } = await db
+      .from("stalls")
+      .upsert(rows.slice(i, i + UPSERT_CHUNK), { onConflict: "paystack_reference", ignoreDuplicates: true })
+      .select("paystack_reference");
+    if (error) throw new Error(`stalls upsert: ${error.message}`);
+    inserted += data?.length ?? 0;
+  }
+  return inserted;
+}
+
+export type IngestOneResult = {
+  reference: string;
+  paystackStatus: string | null;
+  outcome: "inserted" | "already_present" | "not_a_stall";
+  // Set when outcome is not_a_stall.
+  why?: "settled" | "too_young" | "no_creation_time" | "reference_mismatch";
+};
+
+// Ingests one transaction by reference, on demand: the same judgement as the
+// sweep (stallFromTransaction, same abandon threshold), applied to a single
+// GET /transaction/verify/:reference. It doesn't touch the sweep's cursor or
+// lock. Repeat runs are no-ops: the stall is stored once.
+export async function ingestOne(
+  secretKey: string,
+  reference: string,
+  now = new Date(),
+  insert: (rows: StallRow[]) => Promise<number> = insertStalls,
+): Promise<IngestOneResult> {
+  const cutoff = new Date(now.getTime() - abandonAfterMs());
+  const tx = await verifyTransaction(secretKey, reference);
+  const status = tx.status ?? null;
+  if (tx.reference && tx.reference !== reference) {
+    return { reference, paystackStatus: status, outcome: "not_a_stall", why: "reference_mismatch" };
+  }
+  const row = stallFromTransaction({ ...tx, reference }, cutoff);
+  if (!row) {
+    const why = status && SETTLED_STATUSES.has(status)
+      ? "settled"
+      : !(tx.created_at ?? tx.createdAt ?? tx.transaction_date)
+        ? "no_creation_time"
+        : "too_young";
+    return { reference, paystackStatus: status, outcome: "not_a_stall", why };
+  }
+  const inserted = await insert([row]);
+  return { reference, paystackStatus: status, outcome: inserted === 1 ? "inserted" : "already_present" };
 }
