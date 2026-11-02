@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { diagnoseStall, validateClassification, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
 import { OUTPUT_SCHEMA, SYSTEM_PROMPT, type DiagnosisModel } from "@/lib/diagnosis-model";
-import { describeEvidenceNeeded, evidenceGaps } from "@/lib/evidence";
+import { describeEvidenceNeeded, evidenceGaps, merchantView } from "@/lib/evidence";
 import { classifyGatewayResponse } from "@/lib/gateway-rules";
 import { INSUFFICIENT_EVIDENCE, OUTCOMES, REASONS, isReason } from "@/lib/reasons";
 import { buildModelInput } from "@/lib/redact";
@@ -130,5 +130,39 @@ describe("INSUFFICIENT_EVIDENCE", () => {
   it("describeEvidenceNeeded is deterministic and has a fallback for no gaps", () => {
     assert.deepEqual(describeEvidenceNeeded(["checkout_log"]), describeEvidenceNeeded(["checkout_log"]));
     assert.equal(describeEvidenceNeeded([]).needed.length, 1);
+  });
+
+  it("an empty Paystack authorization is a card_details gap, not available-with-nulls", () => {
+    for (const authorization of [{}, { card_type: null, bank: null, brand: null, country_code: null }]) {
+      const row = { ...t1698, payload: { ...(t1698.payload as object), authorization } };
+      const input = buildModelInput(row, row.gateway_response);
+      assert.deepEqual(input.card.available, false);
+      assert.deepEqual(evidenceGaps(input), ["behaviour_trail", "checkout_log", "card_details"]);
+    }
+  });
+
+  it("an empty Paystack log is a checkout_log gap", () => {
+    const row = { ...t1698, payload: { ...(t1698.payload as object), log: {} } };
+    assert.ok(evidenceGaps(buildModelInput(row, row.gateway_response)).includes("checkout_log"));
+  });
+
+  it("real card details are still available, and not listed as a gap", () => {
+    const row = { ...t1698, payload: { ...(t1698.payload as object), authorization: { card_type: "visa", bank: "TEST BANK" } } };
+    const input = buildModelInput(row, row.gateway_response);
+    assert.equal(input.card.available, true);
+    assert.ok(!evidenceGaps(input).includes("card_details"));
+  });
+
+  it("the merchant never sees a confidence figure on INSUFFICIENT_EVIDENCE", () => {
+    const view = merchantView({ reason: INSUFFICIENT_EVIDENCE, confidence: 0.85, evidenceGaps: ["behaviour_trail", "checkout_log"] });
+    assert.equal(view.kind, "undetermined");
+    assert.ok(!("confidence" in view));
+    const text = JSON.stringify(view);
+    assert.ok(!/0\.85|85|%/.test(text), `merchant view shows a number: ${text}`);
+    assert.equal((view as { summary: string }).summary, "Could not determine why this payment stalled.");
+  });
+
+  it("a real reason is shown with its confidence", () => {
+    assert.deepEqual(merchantView({ reason: "CARD_FAILING", confidence: 0.95, evidenceGaps: [] }), { kind: "diagnosed", reason: "CARD_FAILING", confidence: 0.95 });
   });
 });
