@@ -84,6 +84,9 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   - **Every live-key run logs** `[paystack] LIVE secret key in use by <entrypoint>`.
   - **Each entrypoint asks for the key once, at startup, under its own name,** and passes it down; library code never asks. `tests/guards.ts` checks every entrypoint uses its own name, as a string literal, and that nothing else asks. Negative fixtures prove that guard bites.
   - **The endpoint allowlist still applies:** even a live key can only reach the allowlisted GET endpoints.
+  - **Why `diagnose-stall` is on the list:** the risk a live key carries is moving money or reaching a customer. `diagnose-stall` does neither: it writes only to Opada's own database, and the endpoint allowlist already limits a live key to two GET endpoints. Removing it would cost stored diagnoses on staging day with no reduction in real risk.
+  - **An unset `OPADA_DRY_RUN` counts as off.** Only the exact value `true` counts as on. That's deliberate; keep it.
+  - **The live key and both flags go in `.env.local` only, never in Vercel.** The only exception would be a deliberate decision that the deployed poller should read live. That is a separate decision, and **it has not been made.**
 
 ## Payment providers: direction, not yet built
 
