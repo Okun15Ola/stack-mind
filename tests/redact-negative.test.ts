@@ -75,7 +75,8 @@ describe("PII gate negative corpus: amounts in kobo, 3 to 9 digits", () => {
         "Insufficient Funds",
       );
       assert.doesNotThrow(() => assertNoPii(input, known));
-      assert.equal(input.checkout?.steps[0].message, `Attempted to pay ${amount}`);
+      assert.ok(input.checkout.available);
+      assert.equal(input.checkout.steps[0].message, `Attempted to pay ${amount}`);
     });
   }
 });
@@ -102,6 +103,7 @@ describe("PII gate negative corpus: another stall's transaction id", () => {
   });
 
   it("reaches the model redacted, never as raw digits", () => {
-    assert.equal(input.checkout?.steps[0].message, "Retried after transaction [card]");
+    assert.ok(input.checkout.available);
+    assert.equal(input.checkout.steps[0].message, "Retried after transaction [card]");
   });
 });

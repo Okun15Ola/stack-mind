@@ -87,25 +87,48 @@ export function transactionFromPayload(payload: unknown): Json {
 
 const MAX_HISTORY_STEPS = 30;
 
+// A fact we could not collect. Sent explicitly, with the reason it is
+// missing, so the model never reads a gap in our pipeline as evidence about
+// the buyer. Never send a bare null for a whole section.
+export type Unavailable = { available: false; why: string };
+
+export const UNAVAILABLE = {
+  behaviourTrail:
+    "Opada's buyer behaviour trail is not connected for this merchant, so nothing is known about what the buyer did on the merchant's site. This is a gap in our data, not evidence about the buyer either way.",
+  checkout:
+    "Paystack returned no checkout log for this transaction. This is a gap in our data, not evidence that the buyer did or did not attempt payment.",
+  card: "Paystack returned no card details for this transaction. This is a gap in our data, not evidence about the buyer either way.",
+} as const;
+
 export type ModelInput = {
   gateway_response: string | null;
   amount_minor_units: number | null;
   currency: string | null;
   payment_channel: string | null;
   is_subscription_renewal: boolean;
-  card: {
-    type: string | null;
-    brand: string | null;
-    bank: string | null;
-    country_code: string | null;
-  } | null;
-  checkout: {
-    time_spent_seconds: number | null;
-    attempts: number | null;
-    errors: number | null;
-    mobile: boolean | null;
-    steps: { type: string | null; message: string | null; at_second: number | null }[];
-  } | null;
+  card:
+    | {
+        available: true;
+        type: string | null;
+        brand: string | null;
+        bank: string | null;
+        country_code: string | null;
+      }
+    | Unavailable;
+  checkout:
+    | {
+        available: true;
+        time_spent_seconds: number | null;
+        attempts: number | null;
+        errors: number | null;
+        mobile: boolean | null;
+        steps: { type: string | null; message: string | null; at_second: number | null }[];
+      }
+    | Unavailable;
+  // Opada's own record of what the buyer did on the merchant's site. Not
+  // built yet, so it is unavailable for every merchant. When it exists, this
+  // becomes a union with the trail's facts, set per merchant.
+  behaviour_trail: Unavailable;
 };
 
 export type StallForModel = {
@@ -133,14 +156,16 @@ export function buildModelInput(stall: StallForModel, gatewayResponse: string | 
     is_subscription_renewal: stall.event_type === "invoice.payment_failed",
     card: auth
       ? {
+          available: true,
           type: str(auth.card_type),
           brand: str(auth.brand),
           bank: str(auth.bank),
           country_code: str(auth.country_code),
         }
-      : null,
+      : { available: false, why: UNAVAILABLE.card },
     checkout: log
       ? {
+          available: true,
           time_spent_seconds: num(log.time_spent),
           attempts: num(log.attempts),
           errors: num(log.errors),
@@ -150,7 +175,8 @@ export function buildModelInput(stall: StallForModel, gatewayResponse: string | 
             return { type: str(step.type), message: str(step.message), at_second: num(step.time) };
           }),
         }
-      : null,
+      : { available: false, why: UNAVAILABLE.checkout },
+    behaviour_trail: { available: false, why: UNAVAILABLE.behaviourTrail },
   };
 }
 

@@ -43,6 +43,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Record only what the provider told us.** Don't infer a refusal, an outage or any other cause the provider didn't report. That is the same mistake as reading Paystack's `abandoned` status as "the buyer left".
 - **`diagnoses.model` names the model that actually produced the answer**, read from the API response, never the model that was requested. After a fallback it is the fallback model. If a response doesn't say which model answered, diagnosis throws rather than guess.
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
+- **A gap in our data is never sent as a fact about the buyer.** When a section of model input can't be filled (no Paystack checkout log, no card details, behaviour trail not connected for the merchant), send `{ "available": false, "why": … }` saying so, never a bare `null`. The system prompt tells the model unavailable data is not evidence either way. Real case: `T169809891137085`, where `checkout: null` was read as "no checkout activity, so the payment was likely never attempted".
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
 
 ### Customer data
