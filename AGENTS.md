@@ -17,7 +17,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - If it throws, stop. Don't fall back to acting on stale data.
 - Diagnosis and action code should take a `VerifiedStall`, which only `reverifyStall()` can produce.
 - The database enforces this independently. Inserting a diagnosis or an action, or moving an action to `executing`, is refused unless the stall was verified in the last 10 minutes and isn't resolved.
-- New actions default to `mode = 'dry_run'`. Nothing runs in `live` mode without explicit sign-off.
+- New actions default to `mode = 'dry_run'`. Nothing runs in `live` mode, and no message reaches a real buyer, without Okunola's explicit sign-off.
 
 ### Diagnosis (`src/lib/diagnose.ts`)
 
@@ -28,9 +28,34 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
 
+### Customer data
+
+- **No customer PII in prompts, logs or error messages.** Use pseudonymous ids only (stall id, Paystack reference). Never print a buyer's email, phone, name, IP or card details.
+- `src/lib/redact.ts` is the only thing between buyer data and a model prompt. Its checks fail closed; don't loosen them to make an input pass. Fix the input instead.
+
+## Paystack safety
+
+- **Never point the LIVE Paystack webhook URL at this app.** The live account's webhook serves ShopCart's production orders; repointing it would redirect them here. Webhook and poller work uses the test account only.
+- **Test keys only** (`sk_test_…`) until Okunola approves live. The code refuses anything else.
+
+## Payment providers: direction, not yet built
+
+Opada will integrate with three of Okunola's products:
+
+- **PassMate and ShopCart**, both on the **same** Paystack account. One Paystack connection covers both.
+- **finalyear.ng**, which runs on **Bachs**, not Paystack.
+
+None of this is implemented. Don't pull in ShopCart, PassMate or finalyear.ng code, schema or types until the architecture is decided.
+
+The decision so far:
+
+- A later PR introduces a **`PaymentProvider` seam**, the same shape as `DiagnosisModel`: one interface covering *list stalls*, *verify a reference*, and *return the raw failure reason*. Paystack implements it. Bachs implements it only if and when finalyear.ng is in scope.
+- **Don't genericise anything beyond that interface.** `src/lib/gateway-rules.ts` stays Paystack-specific and keeps its name. Bachs, if it happens, gets its own rules file with its own strings.
+- **The abandoned-vs-failed finding is Paystack behaviour.** Don't assume another provider mislabels declines the same way, or that its failure text means what Paystack's does.
+
 ## Contributing
 
-**Never push to `main`.** Branch protection rejects direct pushes, and that's intended. Every change goes through a pull request that the repo owner reviews and merges.
+**Never push to `main`.** Branch protection rejects direct pushes, and that's intended. Every change goes through a pull request that Okunola reviews and merges.
 
 1. Branch off the latest `main` with a descriptive name: `feat/…`, `fix/…`, `docs/…` or `chore/…` (e.g. `feat/diagnose-stub`, `fix/poller-window`).
 2. Commit and push that branch.
@@ -38,12 +63,12 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
    - what changed;
    - why;
    - anything the reviewer must check or do by hand: SQL to run, env vars to set, dashboard settings.
-4. Don't merge your own PR. The owner reviews and merges.
+4. Don't merge your own PR. Okunola reviews and merges.
 
-If something seems to need a direct change to `main`, stop and ask the owner first, with the reason.
+If something seems to need a direct change to `main`, stop and ask Okunola first, with the reason.
 
 Ground rules that apply to every PR:
 
 - **No secrets in the repo.** Keys live only in Vercel, GitHub Actions secrets and your local `.env.local`, which is gitignored. `.env.example` has names only.
-- **Paystack test keys only** (`sk_test_…`). The code refuses anything else. Going live needs explicit owner sign-off.
-- **SQL is never run by code or tooling.** Add a numbered file under `supabase/migrations/` and say in the PR that it needs running. The owner runs it in the Supabase SQL editor.
+- **Paystack test keys only** (`sk_test_…`). The code refuses anything else. Going live needs Okunola's explicit sign-off.
+- **SQL is never run by code or tooling.** You have no database access. Add a numbered file under `supabase/migrations/` and say in the PR that it needs running. Okunola runs all SQL himself in the Supabase SQL editor.
