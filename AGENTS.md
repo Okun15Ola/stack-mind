@@ -78,7 +78,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   - dry-run is absolute, and no message reaches any real buyer.
 
 - **A live Paystack key exists ONLY for staging on Okunola's own Paystack account, read-only.** It is not a path to going live, and not for any other merchant's account. `paystackKeyFor()` in `src/lib/paystack.ts` accepts `sk_live_…` only when **all** of these hold:
-  1. **The entrypoint is one of `LIVE_KEY_ENTRYPOINTS`:** `poller`, `diagnose-stall`, `compare-models`, `export-test-set`. These only read from Paystack. **Never the webhook handler, and never anything that could send.** Adding an entrypoint to that list needs Okunola's sign-off.
+  1. **The entrypoint is one of `LIVE_KEY_ENTRYPOINTS`:** `poller` (the cron route and `npm run poll`), `diagnose-stall`, `compare-models`, `export-test-set`. These only read from Paystack. **Never the webhook handler, and never anything that could send.** Adding an entrypoint to that list needs Okunola's sign-off.
   2. **`PAYSTACK_LIVE_READ_ONLY=true` is set explicitly.** The key alone is not enough.
   3. **`OPADA_DRY_RUN=true` is set explicitly.** With a live key and dry-run anything but explicitly on, the entrypoint refuses to start.
   - **Every live-key run logs** `[paystack] LIVE secret key in use by <entrypoint>`.
