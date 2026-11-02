@@ -161,3 +161,21 @@ export function purgeCallViolations(files: SourceFile[]): string[] {
       .flatMap((line, i) => (/purge_behaviour_events/.test(line) ? [`${f.path}:${i + 1}: purge called from app code: ${line.trim()}`] : [])),
   );
 }
+
+// --- Hard gate: the join checks for a single merchant before loading events ---
+
+export const DIAGNOSE_FILE = join("src", "lib", "diagnose.ts");
+
+export function merchantGateViolations(files: SourceFile[]): string[] {
+  const file = files.find((f) => f.path === DIAGNOSE_FILE);
+  if (!file) return [`${DIAGNOSE_FILE} not found`];
+  const fnStart = file.text.indexOf("async function loadTrail(");
+  if (fnStart < 0) return [`${DIAGNOSE_FILE}: loadTrail() not found`];
+  const body = file.text.slice(fnStart);
+  const check = body.indexOf("assertSingleMerchant(");
+  const load = body.indexOf(".loadBehaviourEvents(");
+  if (load < 0) return [`${DIAGNOSE_FILE}: loadTrail() never loads events`];
+  if (check < 0) return [`${DIAGNOSE_FILE}: loadTrail() loads events without assertSingleMerchant()`];
+  if (check > load) return [`${DIAGNOSE_FILE}: loadTrail() checks the merchant count only after loading events`];
+  return [];
+}

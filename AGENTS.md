@@ -102,6 +102,10 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Principle: if we cannot prove we are deleting, we stop collecting.** This holds for any data Opada keeps on a retention limit, not just behaviour events. Collection depends on deletion being demonstrably on schedule, not the other way round. A new store with a retention promise gets the same treatment: a recorded purge, an overdue check, and collection refused while it's overdue.
 - **Retention is 30 days, and it's a privacy commitment.** `purge_behaviour_events()` runs **daily from pg_cron inside the database**, never from app code and never on the cron poller (GitHub Actions runs that far less often than scheduled, and disables it after 60 days of repo inactivity). `tests/guards.ts` fails if any app code calls the purge.
   - **Every run is recorded in `retention_runs`.** A purge that hasn't run in over 48 hours (or whose status can't be read) is a failure. The ingest endpoint refuses new events (`503 retention_overdue`), applying the principle above. Emitters must drop events on that status and never retry or queue them (`docs/behaviour-trail-integration.md`), or a stalled cron job becomes a retry storm. The cron poll route returns `500`, which fails the GitHub workflow.
+- **Hard gate: one merchant until stalls carry a merchant id.** The trail join doesn't filter by merchant yet. Two layers refuse to run with more than one:
+  - the database refuses a second merchant's emitter key (migration 0006), so a second merchant connecting fails at registration;
+  - `loadTrail()` calls `assertSingleMerchant()` before loading any events, and `tests/guards.ts` (with fixtures) fails if that check is removed or moved after the load.
+  - **Lift it only together with** `stalls.merchant_id` and a merchant filter in the join. The database trigger lifts itself when that column exists, so the join filter must land in the same change.
 - **What a forged event buys an attacker:** a polluted trail, so a wrong diagnosis and possibly a wrong message to a real buyer. Not money.
 
 ## Payment providers: direction, not yet built

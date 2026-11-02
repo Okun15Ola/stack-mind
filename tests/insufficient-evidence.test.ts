@@ -40,6 +40,7 @@ function memoryStore(rows: StallForDiagnosis[]) {
   const saved: DiagnosisRow[] = [];
   const store: DiagnosisStore = {
     loadBehaviourEvents: async () => [],
+    countMerchants: async () => 1,
     loadStall: async (id) => rows.find((r) => r.id === id)!,
     saveDiagnosis: async (row) => void saved.push(row),
     flagBlocked: async () => {},

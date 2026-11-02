@@ -5,6 +5,8 @@ import { CLIENT_EVENTS_NOTE, selectTrailEvents, trailRefsFromTransaction, type S
 import { diagnoseStall, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
 import type { DiagnosisModel } from "@/lib/diagnosis-model";
 import { evidenceGaps } from "@/lib/evidence";
+import { MultipleMerchantsError, assertSingleMerchant } from "@/lib/behaviour/merchants";
+import { merchantGateViolations, readTree } from "./guards";
 import { UNAVAILABLE, assertNoPii, buildModelInput, knownIdentifiers, type ModelInput } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
 
@@ -148,6 +150,7 @@ describe("the trail in model input", () => {
       saveDiagnosis: async (r) => void saved.push(r),
       flagBlocked: async () => {},
       loadBehaviourEvents: async (refs, until) => ((asked = { refs, until: until.toISOString() }), events),
+      countMerchants: async () => 1,
     };
     const NOW = new Date("2026-11-02T10:10:00Z");
     const verified = { id: stall.id, reference: "r", paystackStatus: "abandoned", gatewayResponse: stall.gateway_response, verifiedAt: new Date(NOW.getTime() - 30_000) } as VerifiedStall;
@@ -155,5 +158,50 @@ describe("the trail in model input", () => {
     assert.deepEqual(asked, { refs: { buyerRef: BUYER, sessionRef: SESSION }, until: "2026-11-02T10:20:00.000Z" });
     assert.equal(seen!.behaviour_trail.available, true);
     assert.ok(!saved[0].evidence_gaps.includes("behaviour_trail"));
+  });
+});
+
+describe("hard gate: one merchant until stalls carry a merchant id", () => {
+  const NOW = new Date("2026-11-02T10:10:00Z");
+  const verified = { id: stall.id, reference: "r", paystackStatus: "abandoned", gatewayResponse: stall.gateway_response, verifiedAt: new Date(NOW.getTime() - 30_000) } as VerifiedStall;
+  const neverCalled: DiagnosisModel = { classify: async () => assert.fail("model called") };
+
+  it("with two merchants, the join refuses: no events loaded, no model call, nothing saved", async () => {
+    let loaded = false;
+    const saved: DiagnosisRow[] = [];
+    const store: DiagnosisStore = {
+      loadStall: async () => stall,
+      saveDiagnosis: async (r) => void saved.push(r),
+      flagBlocked: async () => {},
+      loadBehaviourEvents: async () => ((loaded = true), []),
+      countMerchants: async () => 2,
+    };
+    await assert.rejects(diagnoseStall(verified, { store, model: neverCalled, now: () => NOW, log: () => {} }), MultipleMerchantsError);
+    assert.equal(loaded, false);
+    assert.equal(saved.length, 0);
+  });
+
+  it("a stall with no trail refs never needs the merchant count", async () => {
+    const noRefs = { ...stall, payload: { status: "abandoned" } };
+    const store: DiagnosisStore = {
+      loadStall: async () => noRefs,
+      saveDiagnosis: async () => {},
+      flagBlocked: async () => {},
+      loadBehaviourEvents: async () => [],
+      countMerchants: async () => assert.fail("merchant count read for a stall with no refs"),
+    };
+    const model: DiagnosisModel = { classify: async () => ({ output: { reason: "INSUFFICIENT_EVIDENCE", confidence: 0.8, rationale: "x" }, model: "fake:m", refusals: [] }) };
+    await diagnoseStall(verified, { store, model, now: () => NOW, log: () => {} });
+  });
+
+  it("assertSingleMerchant allows 0 and 1, refuses more, and refuses nonsense", () => {
+    assert.doesNotThrow(() => assertSingleMerchant(0));
+    assert.doesNotThrow(() => assertSingleMerchant(1));
+    assert.throws(() => assertSingleMerchant(2), MultipleMerchantsError);
+    assert.throws(() => assertSingleMerchant(Number.NaN));
+  });
+
+  it("the real tree: the join checks the merchant count before loading events", () => {
+    assert.deepEqual(merchantGateViolations(readTree("src")), []);
   });
 });

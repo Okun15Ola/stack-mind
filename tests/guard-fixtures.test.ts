@@ -13,6 +13,8 @@ import {
   entrypointNamingViolations,
   liveEntrypointViolations,
   purgeCallViolations,
+  merchantGateViolations,
+  DIAGNOSE_FILE,
   paystackGuardViolations,
   sectionsMissingAvailability,
   type SourceFile,
@@ -126,4 +128,18 @@ describe("retention guard: negative fixtures", () => {
   ] as const) {
     it(label, () => bites(purgeCallViolations([lib(text)]), label));
   }
+});
+
+describe("merchant gate guard: negative fixtures", () => {
+  const diag = (body: string): SourceFile => ({ path: DIAGNOSE_FILE, text: `async function loadTrail(store, row) {\n${body}\n}` });
+  it("checking before loading passes", () => {
+    assert.deepEqual(merchantGateViolations([diag("assertSingleMerchant(await store.countMerchants());\nawait store.loadBehaviourEvents(refs, until);")]), []);
+  });
+  for (const [label, body] of [
+    ["the check removed", "await store.loadBehaviourEvents(refs, until);"],
+    ["the check moved after loading", "await store.loadBehaviourEvents(refs, until);\nassertSingleMerchant(await store.countMerchants());"],
+  ] as const) {
+    it(label, () => bites(merchantGateViolations([diag(body)]), label));
+  }
+  it("loadTrail renamed or gone", () => bites(merchantGateViolations([{ path: DIAGNOSE_FILE, text: "export {}" }]), "no loadTrail"));
 });

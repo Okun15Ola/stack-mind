@@ -62,6 +62,7 @@ function memoryStore(rows: StallForDiagnosis[]) {
   const flags: { stallId: string; reason: string }[] = [];
   const store: DiagnosisStore = {
     loadBehaviourEvents: async () => [],
+    countMerchants: async () => 1,
     async flagBlocked(stallId, reason) {
       flags.push({ stallId, reason });
     },
@@ -350,6 +351,7 @@ describe("guards", () => {
   it("surfaces the database guard's refusal", async () => {
     const store: DiagnosisStore = {
       loadBehaviourEvents: async () => [],
+    countMerchants: async () => 1,
       flagBlocked: async () => {},
       loadStall: async () => realFailed,
       saveDiagnosis: async () => {
