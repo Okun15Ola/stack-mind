@@ -3,41 +3,13 @@
 // section() in src/lib/redact.ts. These tests fail if anything decides
 // availability anywhere else, or if a section skips the helper.
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { describe, it } from "node:test";
 import { buildModelInput, section, type StallForModel } from "@/lib/redact";
-
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name);
-    if (statSync(path).isDirectory()) return sourceFiles(path);
-    return /\.(ts|tsx|mts)$/.test(name) ? [path] : [];
-  });
-}
-
-// Strips comments, and the one sanctioned block in redact.ts.
-function code(path: string): string {
-  let text = readFileSync(path, "utf8");
-  if (path.endsWith(join("lib", "redact.ts"))) {
-    const begin = text.indexOf("// availability:begin");
-    const end = text.indexOf("// availability:end");
-    assert.ok(begin >= 0 && end > begin, "redact.ts must keep the availability:begin/end markers around section()");
-    text = text.slice(0, begin) + text.slice(end);
-  }
-  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
-}
+import { availabilityGuardViolations, readTree, sectionsMissingAvailability } from "./guards";
 
 describe("section availability is decided in one place", () => {
   it("no source file outside section() writes `available: true` or `available: false`", () => {
-    const offenders: string[] = [];
-    for (const file of [...sourceFiles("src"), ...sourceFiles("scripts")]) {
-      const lines = code(file).split("\n");
-      lines.forEach((line, i) => {
-        if (/\bavailable\s*:\s*(true|false)\b/.test(line)) offenders.push(`${file}:${i + 1}: ${line.trim()}`);
-      });
-    }
-    assert.deepEqual(offenders, [], `availability decided outside section():\n${offenders.join("\n")}`);
+    assert.deepEqual(availabilityGuardViolations(readTree("src", "scripts")), []);
   });
 
   it("every section of the model input carries `available`, so none can skip the helper", () => {
@@ -45,11 +17,8 @@ describe("section availability is decided in one place", () => {
       { gateway_response: "x", amount: 1, currency: "NGN", event_type: "transaction.abandoned", payload: {} },
       "x",
     ) as Record<string, unknown>;
-    const objectKeys = Object.keys(input).filter((k) => input[k] !== null && typeof input[k] === "object");
-    assert.ok(objectKeys.length >= 3);
-    for (const k of objectKeys) {
-      assert.ok("available" in (input[k] as object), `section "${k}" was built without section()`);
-    }
+    assert.ok(Object.values(input).filter((v) => v !== null && typeof v === "object").length >= 3);
+    assert.deepEqual(sectionsMissingAvailability(input), []);
   });
 });
 

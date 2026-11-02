@@ -1,0 +1,85 @@
+// Negative fixtures: each one MUST make its guard fail. If a refactor of a
+// guard stops it biting, these fail. (The first version of these guards had
+// exactly that hole: a comment-stripper hid a URL-string bypass.)
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { describe, it } from "node:test";
+import {
+  PAYSTACK_FILE,
+  REDACT_FILE,
+  allowlistViolations,
+  availabilityGuardViolations,
+  paystackGuardViolations,
+  sectionsMissingAvailability,
+  type SourceFile,
+} from "./guards";
+
+const script = (text: string): SourceFile => ({ path: join("scripts", "fixture.ts"), text });
+const lib = (text: string): SourceFile => ({ path: join("src", "lib", "fixture.ts"), text });
+const PAYSTACK_OK = `
+// paystack-http:begin
+const PAYSTACK_HOST = "api.paystack.co";
+export async function paystackRequest() { return fetch(\`https://\${PAYSTACK_HOST}/transaction\`); }
+// paystack-http:end
+export function paystackTestKey() { return process.env.PAYSTACK_SECRET_KEY; }
+`;
+const REDACT_OK = `
+// availability:begin
+export function section(f, why) { return f ? { available: true, ...f } : { available: false, why }; }
+// availability:end
+`;
+
+function bites(violations: string[], label: string) {
+  assert.ok(violations.length > 0, `guard did not fire on: ${label}`);
+}
+
+describe("Paystack guard: negative fixtures", () => {
+  it("a well-formed client passes (so the fixtures below fail for the right reason)", () => {
+    assert.deepEqual(paystackGuardViolations([{ path: PAYSTACK_FILE, text: PAYSTACK_OK }]), []);
+  });
+
+  const cases: [string, SourceFile[]][] = [
+    ["fetch to api.paystack.co inside a URL string (the one that slipped)", [script(`export const x = () => fetch("https://api.paystack.co/refund", { method: "POST" });`)]],
+    ["the host after a // inside a string", [script(`const u = "see //"; fetch("https://api.paystack.co/transfer");`)]],
+    ["the host in a template string", [script("fetch(`https://api.paystack.co/charge`)")]],
+    ["the host split into a variable", [lib(`const HOST = "api.paystack.co"; fetch("https://" + HOST + "/refund");`)]],
+    ["a direct read of the key outside paystack.ts", [lib(`export const k = process.env.PAYSTACK_SECRET_KEY;`)]],
+    ["a bracket read of the key outside paystack.ts", [script(`const k = process.env["PAYSTACK_SECRET_KEY"];`)]],
+    ["a second fetch in paystack.ts", [{ path: PAYSTACK_FILE, text: PAYSTACK_OK + `\nexport const y = () => fetch("https://x.example");` }]],
+    ["the host outside the block in paystack.ts", [{ path: PAYSTACK_FILE, text: PAYSTACK_OK + `\nconst H = "api.paystack.co";` }]],
+    ["paystack.ts with its markers removed", [{ path: PAYSTACK_FILE, text: PAYSTACK_OK.replace("// paystack-http:begin", "") }]],
+  ];
+  for (const [label, files] of cases) it(label, () => bites(paystackGuardViolations(files), label));
+
+  it("an added allowlist entry", () => {
+    const base = [
+      { method: "GET", name: "list transactions" },
+      { method: "GET", name: "verify transaction" },
+    ];
+    assert.deepEqual(allowlistViolations(base), []);
+    bites(allowlistViolations([...base, { method: "POST", name: "refund" }]), "POST refund added");
+    bites(allowlistViolations([...base, { method: "GET", name: "balance" }]), "GET balance added");
+    bites(allowlistViolations([{ method: "POST", name: "list transactions" }, base[1]]), "method changed to POST");
+    bites(allowlistViolations(base.slice(1)), "entry removed");
+  });
+});
+
+describe("section() guard: negative fixtures", () => {
+  it("a well-formed redact.ts passes", () => {
+    assert.deepEqual(availabilityGuardViolations([{ path: REDACT_FILE, text: REDACT_OK }]), []);
+  });
+
+  const cases: [string, SourceFile[]][] = [
+    ["available: true after a URL on the same line (the stripper hole)", [lib(`export const bad = { url: "https://x.example", available: true };`)]],
+    ["available: false in another file", [lib(`return { available: false, why: "gap" };`)]],
+    ["available:true with no space", [script(`const s = {available:true};`)]],
+    ["availability decided in redact.ts outside section()", [{ path: REDACT_FILE, text: REDACT_OK + `\nconst card = { available: true };` }]],
+    ["redact.ts with its markers removed", [{ path: REDACT_FILE, text: REDACT_OK.replace("// availability:end", "") }]],
+  ];
+  for (const [label, files] of cases) it(label, () => bites(availabilityGuardViolations(files), label));
+
+  it("a section built without section()", () => {
+    assert.deepEqual(sectionsMissingAvailability({ gateway_response: "x", card: { available: false, why: "g" } }), []);
+    bites(sectionsMissingAvailability({ gateway_response: "x", card: { type: "visa", bank: null } }), "card without available");
+  });
+});

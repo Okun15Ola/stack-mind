@@ -112,4 +112,5 @@ Ground rules that apply to every PR:
 
 - **No secrets in the repo.** Keys live only in Vercel, GitHub Actions secrets and your local `.env.local`, which is gitignored. `.env.example` has names only.
 - **Paystack test keys only** (`sk_test_…`). The code refuses anything else. Going live needs Okunola's explicit sign-off.
+- **Guard tests require negative fixtures. A guard with no test proving it bites is not a guard.** A test that scans the code to forbid something (for example the Paystack bypass guard or the `section()` guard) must live in `tests/guards.ts` as a function, and must have fixtures in `tests/guard-fixtures.test.ts` that violate it and make it fail. Guards scan raw source text and don't strip comments: an earlier comment-stripper hid a URL-string bypass, which is exactly the failure these fixtures catch.
 - **SQL is never run by code or tooling.** You have no database access. Add a numbered file under `supabase/migrations/` and say in the PR that it needs running. Okunola runs all SQL himself in the Supabase SQL editor.

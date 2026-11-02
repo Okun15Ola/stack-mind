@@ -3,8 +3,6 @@
 // paystackRequest() and its endpoint allowlist. These tests fail if anything
 // calls Paystack another way, or if the allowlist grows a write endpoint.
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   PAYSTACK_ALLOWLIST,
@@ -15,6 +13,7 @@ import {
   paystackRequest,
   verifyTransaction,
 } from "@/lib/paystack";
+import { allowlistViolations, paystackGuardViolations, readTree } from "./guards";
 
 const KEY = "sk_test_secretvalue1234567890";
 
@@ -37,11 +36,7 @@ afterEach(() => {
 
 describe("the allowlist", () => {
   it("holds exactly the read endpoints Opada uses, and only GET", () => {
-    assert.deepEqual(
-      PAYSTACK_ALLOWLIST.map((e) => `${e.method} ${e.name}`),
-      ["GET list transactions", "GET verify transaction"],
-    );
-    for (const e of PAYSTACK_ALLOWLIST) assert.equal(e.method, "GET");
+    assert.deepEqual(allowlistViolations(PAYSTACK_ALLOWLIST), []);
   });
 
   it("lets the two real calls through, as GET to api.paystack.co, refusing redirects", async () => {
@@ -116,39 +111,7 @@ describe("anything else is refused before a request is sent", () => {
 });
 
 describe("nothing calls Paystack except through paystackRequest()", () => {
-  function sourceFiles(dir: string): string[] {
-    return readdirSync(dir).flatMap((name) => {
-      const path = join(dir, name);
-      if (statSync(path).isDirectory()) return sourceFiles(path);
-      return /\.(ts|tsx|mts|js|mjs)$/.test(name) ? [path] : [];
-    });
-  }
-  const files = [...sourceFiles("src"), ...sourceFiles("scripts")];
-  const PAYSTACK_FILE = join("src", "lib", "paystack.ts");
-  const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
-  function outsideHttpBlock(path: string): string {
-    const text = stripComments(readFileSync(path, "utf8"));
-    if (path !== PAYSTACK_FILE) return text;
-    const raw = readFileSync(path, "utf8");
-    const begin = raw.indexOf("// paystack-http:begin");
-    const end = raw.indexOf("// paystack-http:end");
-    assert.ok(begin >= 0 && end > begin, "paystack.ts must keep the paystack-http:begin/end markers");
-    return stripComments(raw.slice(0, begin) + raw.slice(end));
-  }
-
-  it("the Paystack API host appears only inside paystackRequest()", () => {
-    const offenders = files.filter((f) => /paystack\.co\b/.test(outsideHttpBlock(f)));
-    assert.deepEqual(offenders, [], `Paystack called directly from: ${offenders.join(", ")}`);
-  });
-
-  it("paystack.ts calls fetch exactly once, inside paystackRequest()", () => {
-    const raw = stripComments(readFileSync(PAYSTACK_FILE, "utf8"));
-    assert.equal((raw.match(/\bfetch\s*\(/g) ?? []).length, 1);
-    assert.ok(!/\bfetch\s*\(/.test(outsideHttpBlock(PAYSTACK_FILE)));
-  });
-
-  it("only paystack.ts reads PAYSTACK_SECRET_KEY from the environment", () => {
-    const offenders = files.filter((f) => f !== PAYSTACK_FILE && /process\.env(\.PAYSTACK_SECRET_KEY|\[\s*["']PAYSTACK_SECRET_KEY)/.test(stripComments(readFileSync(f, "utf8"))));
-    assert.deepEqual(offenders, [], `PAYSTACK_SECRET_KEY read outside paystack.ts: ${offenders.join(", ")}`);
+  it("the real tree has no bypass: host, fetch and key stay inside paystack.ts's client", () => {
+    assert.deepEqual(paystackGuardViolations(readTree("src", "scripts")), []);
   });
 });
