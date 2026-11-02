@@ -1,4 +1,4 @@
-import { ModelRefusedError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
+import { ModelRefusedError, ModelUnparseableError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
 import { isReason, type Classification } from "@/lib/reasons";
 import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, type StallForModel } from "@/lib/redact";
@@ -104,6 +104,7 @@ function blockReason(err: unknown): string | null {
   if (err instanceof ModelRefusedError) {
     return `model_refused: ${err.refusals.map((r) => `${r.model} (${r.category ?? "no category"})`).join("; ")}`;
   }
+  if (err instanceof ModelUnparseableError) return `model_unparseable: ${err.model} (${err.attempts} attempts)`;
   if (err instanceof PiiLeakError) return `pii_gate: ${err.kind} at ${err.path}`;
   return null;
 }

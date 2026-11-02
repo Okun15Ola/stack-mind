@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 import { REASONS } from "@/lib/reasons";
 import type { ModelInput } from "@/lib/redact";
 
@@ -24,6 +25,20 @@ export class ModelRefusedError extends Error {
   }
 }
 
+// Thrown when a model's reply could not be read as an answer and the provider
+// gave no signal why. This is deliberately NOT a refusal: the provider didn't
+// say the model declined, so recording one would assert something we don't
+// know. Carries model ids and attempt count only, never the reply.
+export class ModelUnparseableError extends Error {
+  constructor(
+    readonly model: string,
+    readonly attempts: number,
+  ) {
+    super(`model reply could not be parsed as a diagnosis (${model}, ${attempts} attempt${attempts === 1 ? "" : "s"})`);
+    this.name = "ModelUnparseableError";
+  }
+}
+
 // The one seam between the classifier and any LLM provider. A provider receives
 // input that has already passed the PII gate, and returns its raw output, the
 // id of the model that produced it, and any refusals on the way. Validation
@@ -33,7 +48,7 @@ export interface DiagnosisModel {
   classify(input: ModelInput): Promise<ModelClassification>;
 }
 
-const OUTPUT_SCHEMA = {
+export const OUTPUT_SCHEMA = {
   type: "object",
   properties: {
     reason: { type: "string", enum: [...REASONS] },
@@ -147,17 +162,129 @@ function serverFallbackRefusals(response: MessagesResponse): ModelRefusal[] {
   );
 }
 
+// Groq provider behind the DiagnosisModel seam.
+//
+// The default is a model Groq documents for strict Structured Outputs
+// (constrained decoding to OUTPUT_SCHEMA). It is checked against Groq's live
+// model list before first use, so a retired default fails loudly with a
+// message saying to set DIAGNOSIS_MODEL, instead of failing on every call.
+export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
+
+type ChatClient = Pick<Groq, "chat" | "models">;
+
+// Groq's API has no refusal signal: no stop reason says a model declined.
+// So a reply that isn't an answer in the schema (prose, empty, not a JSON
+// object, no choice at all) is recorded as unparseable, never as a refusal.
+// Unparseable replies are retried once; only a second one flags the stall.
+// An explicit `refusal` field, if Groq ever sends one, is a reported refusal.
+const MAX_UNPARSEABLE_ATTEMPTS = 2;
+
+type Attempt =
+  | { kind: "answer"; output: object; served: string }
+  | { kind: "unparseable"; served: string };
+
+export class GroqDiagnosisModel implements DiagnosisModel {
+  private served: Promise<void> | null = null;
+
+  constructor(
+    private readonly model: string = DEFAULT_GROQ_MODEL,
+    private readonly client: ChatClient = new Groq(),
+  ) {}
+
+  // Confirms Groq currently serves the configured model. Cached per instance.
+  private ensureServed(): Promise<void> {
+    this.served ??= (async () => {
+      const list = await this.client.models.list();
+      const ids = (list.data ?? []).map((m) => m.id);
+      if (!ids.includes(this.model)) {
+        throw new Error(`Groq does not currently serve "${this.model}"; set DIAGNOSIS_MODEL to a model it serves`);
+      }
+    })();
+    this.served.catch(() => (this.served = null));
+    return this.served;
+  }
+
+  async classify(input: ModelInput): Promise<ModelClassification> {
+    await this.ensureServed();
+
+    let last: Attempt | null = null;
+    for (let attempt = 1; attempt <= MAX_UNPARSEABLE_ATTEMPTS; attempt++) {
+      last = await this.attempt(input);
+      if (last.kind === "answer") return { output: last.output, model: `groq:${last.served}`, refusals: [] };
+    }
+    throw new ModelUnparseableError(last!.served, MAX_UNPARSEABLE_ATTEMPTS);
+  }
+
+  private async attempt(input: ModelInput): Promise<Attempt> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      max_completion_tokens: 4096,
+      reasoning_effort: "medium",
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "diagnosis", strict: true, schema: OUTPUT_SCHEMA },
+      },
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: `Diagnose this stalled payment:\n\n${JSON.stringify(input, null, 2)}` },
+      ],
+    });
+
+    const served = typeof response.model === "string" && response.model.trim() ? response.model : null;
+    if (!served) throw new Error("model response does not name the model that produced it");
+
+    const choice = response.choices?.[0];
+    if (!choice) return { kind: "unparseable", served };
+    if (choice.finish_reason === "length") throw new Error("model output truncated at max_completion_tokens");
+
+    const message = choice.message as { content?: string | null; refusal?: unknown };
+    if (typeof message.refusal === "string" && message.refusal.trim()) {
+      // The provider reported a refusal: that is a refusal, not retried.
+      throw new ModelRefusedError([{ model: served, category: "refusal" }]);
+    }
+
+    let output: unknown;
+    try {
+      output = JSON.parse(message.content ?? "");
+    } catch {
+      // Never quote the reply: JSON.parse errors include the offending text.
+      return { kind: "unparseable", served };
+    }
+    if (!output || typeof output !== "object" || Array.isArray(output)) return { kind: "unparseable", served };
+    return { kind: "answer", output, served };
+  }
+}
+
 // Two variables, read in this order:
 //
 //   DIAGNOSIS_MODEL_PROVIDER  whether a model is used at all, and whose.
 //     unset, "" or "none"  -> no model. Rules only; a stall the rules can't
 //                             classify stays undiagnosed. DIAGNOSIS_MODEL is
 //                             ignored (with a warning) and no API key is read.
+//     "groq"               -> Groq, model chosen by DIAGNOSIS_MODEL.
 //     "anthropic"          -> Anthropic, model chosen by DIAGNOSIS_MODEL.
 //     anything else        -> throws.
 //
-//   DIAGNOSIS_MODEL  which Anthropic model, only when the provider is
-//     "anthropic". Unset -> DEFAULT_DIAGNOSIS_MODEL. Must be a claude-* id.
+//   DIAGNOSIS_MODEL  which model, for the chosen provider.
+//     groq:      unset -> DEFAULT_GROQ_MODEL; checked against Groq's live
+//                model list before first use. Not a claude-* id.
+//     anthropic: unset -> DEFAULT_DIAGNOSIS_MODEL. Must be a claude-* id.
+export function createDiagnosisModel(provider: string, model: string): DiagnosisModel {
+  if (provider === "anthropic") {
+    if (model && !/^claude-[a-z0-9-]+$/.test(model)) {
+      throw new Error(`DIAGNOSIS_MODEL "${model}" is not an Anthropic model id`);
+    }
+    return new AnthropicDiagnosisModel(model || DEFAULT_DIAGNOSIS_MODEL);
+  }
+  if (provider === "groq") {
+    if (model && (!/^[a-z0-9][a-z0-9._/-]*$/i.test(model) || model.startsWith("claude-"))) {
+      throw new Error(`DIAGNOSIS_MODEL "${model}" is not a Groq model id`);
+    }
+    return new GroqDiagnosisModel(model || DEFAULT_GROQ_MODEL);
+  }
+  throw new Error(`unknown DIAGNOSIS_MODEL_PROVIDER "${provider}"`);
+}
+
 export function getDiagnosisModel(): DiagnosisModel | null {
   const provider = (process.env.DIAGNOSIS_MODEL_PROVIDER ?? "").trim().toLowerCase();
   const model = (process.env.DIAGNOSIS_MODEL ?? "").trim();
@@ -165,11 +292,5 @@ export function getDiagnosisModel(): DiagnosisModel | null {
     if (model) console.warn("[diagnosis-model] DIAGNOSIS_MODEL is set but DIAGNOSIS_MODEL_PROVIDER is not; ignoring it, rules only");
     return null;
   }
-  if (provider === "anthropic") {
-    if (model && !/^claude-[a-z0-9-]+$/.test(model)) {
-      throw new Error(`DIAGNOSIS_MODEL "${model}" is not an Anthropic model id`);
-    }
-    return new AnthropicDiagnosisModel(model || DEFAULT_DIAGNOSIS_MODEL);
-  }
-  throw new Error(`unknown DIAGNOSIS_MODEL_PROVIDER "${provider}"`);
+  return createDiagnosisModel(provider, model);
 }

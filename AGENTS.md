@@ -30,12 +30,17 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   | `DIAGNOSIS_MODEL_PROVIDER` | `DIAGNOSIS_MODEL` | Result |
   | --- | --- | --- |
   | unset, empty or `none` | anything, or unset | **Rules only.** No model is called and no API key is read. A stall the rules can't classify stays undiagnosed. If `DIAGNOSIS_MODEL` is set, it is ignored and a warning is logged. |
-  | `anthropic` | unset | `claude-haiku-5-5` at low effort, the default. |
-  | `anthropic` | a `claude-…` id | That model (e.g. `claude-opus-5-5` for the frontier model). Anything that isn't a `claude-…` id throws. |
+  | `groq` (**the documented default**, the only provider with a key today) | unset | `openai/gpt-oss-120b`, checked against Groq's live model list before first use. If Groq has retired it, diagnosis throws and says to set `DIAGNOSIS_MODEL`. |
+  | `groq` | a Groq model id | That model, checked the same way. A `claude-…` id throws. |
+  | `anthropic` | unset | `claude-haiku-5-5` at low effort. |
+  | `anthropic` | a `claude-…` id | That model (e.g. `claude-opus-5-5`). Anything that isn't a `claude-…` id throws. |
   | anything else | anything | Throws. |
 
-  `DIAGNOSIS_MODEL_PROVIDER` decides *whether* a model is used; `DIAGNOSIS_MODEL` only picks *which* Anthropic model once it is.
-- **Refusals fall back, and are never silent.** Haiku has no server-side fallback, so a Haiku refusal is retried once on `claude-sonnet-5-5`; the other models use Anthropic's server-side fallback. Every refusal is logged with the stall id, the model that refused and its category, and returned on the diagnosis result.
+  `DIAGNOSIS_MODEL_PROVIDER` decides *whether* a model is used and whose; `DIAGNOSIS_MODEL` only picks *which* model from that provider. "Documented default" means it's what `.env.example` sets: in code, an unset provider is still rules only.
+- **Refusals are never silent.** Every refusal is logged with the stall id, the model that refused and its category, and returned on the diagnosis result. When no model answers, or replies stay unparseable after a retry, the stall is flagged in `stalls.diagnosis_blocked` and left undiagnosed.
+  - Anthropic: Haiku has no server-side fallback, so a Haiku refusal is retried once on `claude-sonnet-5-5`; the other models use Anthropic's server-side fallback.
+  - Groq: the API has no refusal signal, so **an unreadable reply is never recorded as a refusal.** A reply that isn't an answer in the schema (prose, empty, not a JSON object) is *unparseable*: it is retried once, and a second unparseable reply flags the stall as `model_unparseable: <model> (2 attempts)`, distinct from `model_refused: …`. Only an explicit `refusal` field counts as a refusal. There is no fallback model.
+- **Record only what the provider told us.** Don't infer a refusal, an outage or any other cause the provider didn't report. That is the same mistake as reading Paystack's `abandoned` status as "the buyer left".
 - **`diagnoses.model` names the model that actually produced the answer**, read from the API response, never the model that was requested. After a fallback it is the fallback model. If a response doesn't say which model answered, diagnosis throws rather than guess.
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
