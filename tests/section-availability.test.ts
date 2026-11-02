@@ -25,7 +25,7 @@ function code(path: string): string {
     assert.ok(begin >= 0 && end > begin, "redact.ts must keep the availability:begin/end markers around section()");
     text = text.slice(0, begin) + text.slice(end);
   }
-  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|\s)\/\/.*$/gm, "$1");
 }
 
 describe("section availability is decided in one place", () => {

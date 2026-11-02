@@ -44,6 +44,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **`diagnoses.model` names the model that actually produced the answer**, read from the API response, never the model that was requested. After a fallback it is the fallback model. If a response doesn't say which model answered, diagnosis throws rather than guess.
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
 - **A gap in our data is never sent as a fact about the buyer.** When a section of model input can't be filled (no Paystack checkout log, no card details, behaviour trail not connected for the merchant), send `{ "available": false, "why": … }` saying so, never a bare `null`. A section Paystack sends empty, such as `authorization: {}` or an object whose fields are all null, is unavailable too, never "available" with nulls.
+  - **Known tension, not yet acted on:** `card_details` is listed as a gap whenever Paystack sends no card details. For a payment that was never attempted, absent card details is the expected state rather than missing evidence. We chose honesty over cleverness: the code doesn't guess whether a card should exist. Revisit this once the behaviour trail lets the model tell "never attempted" from "attempted and we lost the record". Don't change it before then.
   - **Availability is decided in exactly one place:** `section()` in `src/lib/redact.ts`. A section is available only if at least one field has a value (not null, not undefined, not an empty array). Every section goes through it, including new ones. Never write `available: true` or `available: false` anywhere else: `tests/section-availability.test.ts` fails if you do. This rule exists because "available" meant "the key exists" twice (PR 9 for checkout, PR 13 for card).
   - `section()` lives in `redact.ts` for now, but availability is about the shape of the evidence, not about keeping PII out, which is `redact.ts`'s job. **It's a candidate for its own module if `redact.ts` keeps growing.** If you move it, move the `availability:begin/end` markers with it and update the path in `tests/section-availability.test.ts`. The system prompt tells the model unavailable data is not evidence either way. Real case: `T169809891137085`, where `checkout: null` was read as "no checkout activity, so the payment was likely never attempted".
 - **The model may return `INSUFFICIENT_EVIDENCE` instead of guessing.** It is an outcome, not a reason (`OUTCOMES` vs `REASONS` in `src/lib/reasons.ts`). The gateway rules never return it, and the database refuses it on a `rules:` row.
@@ -67,6 +68,16 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 - **Never point the LIVE Paystack webhook URL at this app.** The live account's webhook serves ShopCart's production orders; repointing it would redirect them here. Webhook and poller work uses the test account only.
 - **Test keys only** (`sk_test_…`) until Okunola approves live. The code refuses anything else.
+- **A Paystack secret key is not read-only.** The same key that verifies a transaction can issue refunds and initiate transfers. "We don't call write endpoints" is not a control, so there is one:
+  - **Every Paystack call goes through `paystackRequest()`** in `src/lib/paystack.ts`, which allows only the method and path pairs in `PAYSTACK_ALLOWLIST`. Today that's `GET /transaction` and `GET /transaction/verify/:reference`.
+  - **Anything else is refused before a request is sent,** with an error that names the method and endpoint shape, never the key or customer data. Redirects are refused too.
+  - **Never call Paystack another way:** no `fetch` to `api.paystack.co`, and no reading `PAYSTACK_SECRET_KEY` outside `paystack.ts`. `tests/paystack-allowlist.test.ts` fails if you do, and fails if the allowlist gains a non-GET entry.
+  - **Add an allowlist entry only for a read endpoint Opada actually needs,** with a test, in its own PR.
+- **Decision (2 November 2026): staging uses the LIVE Paystack account.** No ShopCart staging environment. Live `gateway_response` text is what the classifier is tuned on, and the poller already reads live transactions without a webhook. The constraints don't change:
+  - the live webhook URL is never pointed at Opada (poller only);
+  - dry-run is absolute, and no message reaches any real buyer.
+
+  The code's test-key gate (`paystackTestKey()`) is still in place. Lifting it for live is a separate PR, after the endpoint allowlist is merged.
 
 ## Payment providers: direction, not yet built
 
