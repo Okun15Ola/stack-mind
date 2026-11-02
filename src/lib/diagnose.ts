@@ -1,6 +1,7 @@
 import { ModelRefusedError, ModelUnparseableError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
-import { isReason, type Classification } from "@/lib/reasons";
+import { evidenceGaps, type EvidenceGap } from "@/lib/evidence";
+import { isOutcome, type Classification } from "@/lib/reasons";
 import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, type StallForModel } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -11,6 +12,8 @@ const MAX_VERIFICATION_AGE_MS = 9 * 60_000;
 const MAX_RATIONALE_CHARS = 1000;
 
 export type DiagnosisResult = Classification & {
+  // See DiagnosisRow.evidence_gaps.
+  evidenceGaps: EvidenceGap[];
   stallId: string;
   // The model that actually produced the diagnosis; after a refusal fallback,
   // the fallback model.
@@ -43,6 +46,10 @@ export type DiagnosisRow = {
   confidence: number;
   rationale: string;
   model: string;
+  // Sections of the model input that were unavailable, computed by code.
+  // Empty for rule diagnoses (no model input is built). For an
+  // INSUFFICIENT_EVIDENCE diagnosis, this is what would have been needed.
+  evidence_gaps: EvidenceGap[];
 };
 
 export interface DiagnosisStore {
@@ -114,7 +121,7 @@ function blockReason(err: unknown): string | null {
 export function validateClassification(output: unknown): Classification {
   const o = output && typeof output === "object" ? (output as Record<string, unknown>) : null;
   if (!o) throw new Error("model output is not an object");
-  if (!isReason(o.reason)) throw new Error("model output has an invalid reason");
+  if (!isOutcome(o.reason)) throw new Error("model output has an invalid reason");
   const confidence = o.confidence;
   if (typeof confidence !== "number" || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
     throw new Error("model output confidence is not a number between 0 and 1");
@@ -166,7 +173,7 @@ export async function diagnoseStall(
 
   const ruled = classifyGatewayResponse(gatewayResponse);
   if (ruled) {
-    result = { ...ruled, stallId: stall.id, model: RULES_MODEL_ID, source: "rules", refusals: [] };
+    result = { ...ruled, stallId: stall.id, model: RULES_MODEL_ID, source: "rules", refusals: [], evidenceGaps: [] };
   } else {
     const model = deps.model === undefined ? getDiagnosisModel() : deps.model;
     if (!model) {
@@ -175,8 +182,10 @@ export async function diagnoseStall(
       );
     }
     let classified;
+    let gaps: EvidenceGap[] = [];
     try {
       const input = buildModelInput(row, gatewayResponse);
+      gaps = evidenceGaps(input);
       assertNoPii(input, knownIdentifiers(row));
       classified = await model.classify(input);
     } catch (err) {
@@ -201,7 +210,7 @@ export async function diagnoseStall(
     if (typeof modelId !== "string" || !modelId.trim()) throw new Error(`stall ${stall.id}: provider did not name the model that answered`);
     if (!Array.isArray(refusals)) throw new Error(`stall ${stall.id}: provider did not report refusals`);
     logRefusals(log, stall.id, refusals, modelId);
-    result = { ...validateClassification(output), stallId: stall.id, model: modelId, source: "model", refusals };
+    result = { ...validateClassification(output), stallId: stall.id, model: modelId, source: "model", refusals, evidenceGaps: gaps };
     assertFresh(stall, now());
   }
 
@@ -211,6 +220,7 @@ export async function diagnoseStall(
     confidence: result.confidence,
     rationale: result.rationale,
     model: result.model,
+    evidence_gaps: result.evidenceGaps,
   });
   return result;
 }

@@ -1,4 +1,4 @@
-import type { Classification, Reason } from "@/lib/reasons";
+import type { Reason, RuleClassification } from "@/lib/reasons";
 
 export const RULES_MODEL_ID = "rules:gateway-response@1";
 
@@ -52,7 +52,7 @@ function normalise(text: string): string {
 
 // Returns a classification for a recognised gateway_response, or null when the
 // text is missing or not unambiguous enough to call without a model.
-export function classifyGatewayResponse(gatewayResponse: string | null | undefined): Classification | null {
+export function classifyGatewayResponse(gatewayResponse: string | null | undefined): RuleClassification | null {
   if (!gatewayResponse) return null;
   const text = normalise(gatewayResponse);
 

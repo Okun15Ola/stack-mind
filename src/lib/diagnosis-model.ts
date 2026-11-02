@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import Groq from "groq-sdk";
-import { REASONS } from "@/lib/reasons";
+import { OUTCOMES } from "@/lib/reasons";
 import type { ModelInput } from "@/lib/redact";
 
 // A model that declined to answer. Recorded so a refusal is never silent.
@@ -51,7 +51,7 @@ export interface DiagnosisModel {
 export const OUTPUT_SCHEMA = {
   type: "object",
   properties: {
-    reason: { type: "string", enum: [...REASONS] },
+    reason: { type: "string", enum: [...OUTCOMES] },
     confidence: { type: "number", description: "Probability from 0 to 1 that the reason is correct." },
     rationale: { type: "string", description: "One to three sentences citing the facts used." },
   },
@@ -61,7 +61,7 @@ export const OUTPUT_SCHEMA = {
 
 export const SYSTEM_PROMPT = `You diagnose why a Paystack payment did not complete. You receive redacted transaction facts only, with no customer identity.
 
-Choose exactly one reason:
+Choose exactly one outcome:
 - NO_FUNDS_NOW: the payment method works but lacks funds, or hit a spending limit, right now.
 - CARD_FAILING: the issuer or Paystack declined the card or account, or the card itself has a problem (declined, do not honor, expired, restricted, wrong PIN, fraud block).
 - PROVIDER_DOWN: the bank, issuer, switch or Paystack failed technically (inoperative, malfunction, unavailable).
@@ -71,9 +71,11 @@ Choose exactly one reason:
 
 gateway_response is the primary signal. If it describes a decline, the reason is CARD_FAILING even when there is no checkout activity. Use checkout activity, when it is available, only to separate NO_TRUST, UNANSWERED_QUESTION and FORGOT when gateway_response shows no decline, funds problem or outage.
 
-Some sections are marked "available": false, with a "why". Those are gaps in what we could collect, not facts about the buyer. Never treat missing or unavailable data as evidence: no checkout log does not mean the buyer never attempted payment, and no behaviour trail does not mean the buyer did nothing. If gateway_response shows no decline, funds problem or outage and the sections that could separate the remaining reasons are unavailable, say in the rationale that the evidence cannot tell them apart, and set confidence to match.
+Some sections are marked "available": false, with a "why". Those are gaps in what we could collect, not facts about the buyer. Never treat missing or unavailable data as evidence: no checkout log does not mean the buyer never attempted payment, and no behaviour trail does not mean the buyer did nothing.
 
-confidence is your probability that the reason is right. Go below 0.5 when the evidence is thin, which it often is for the last three reasons. The rationale cites the facts you used and never speculates about who the customer is.`;
+If the facts you have cannot separate the candidate reasons, return INSUFFICIENT_EVIDENCE instead of guessing. Do not pick a reason you cannot support. Never return INSUFFICIENT_EVIDENCE when gateway_response describes a decline, a funds problem or an outage: those are classified from gateway_response alone. Do not list what evidence is missing; that is worked out separately.
+
+confidence is your probability that the reason is right; for INSUFFICIENT_EVIDENCE, your probability that the facts really cannot separate the reasons. Go below 0.5 when the evidence is thin, which it often is for the last three reasons. The rationale cites the facts you used and never speculates about who the customer is.`;
 
 // Cheap by default: the model only sees cases the rules can't decide, and
 // those are short classification calls. Set DIAGNOSIS_MODEL=claude-opus-5-5
