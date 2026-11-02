@@ -3,6 +3,7 @@ import { afterEach, describe, it } from "node:test";
 import {
   AnthropicDiagnosisModel,
   DEFAULT_DIAGNOSIS_MODEL,
+  ModelRefusedError,
   REFUSAL_FALLBACK_MODEL,
   getDiagnosisModel,
 } from "@/lib/diagnosis-model";
@@ -68,11 +69,46 @@ describe("AnthropicDiagnosisModel", () => {
     assert.equal(calls[1].fallbacks, "default");
     assert.deepEqual(calls[1].betas, ["server-side-fallback-2026-07-01"]);
     assert.equal(r.model, `anthropic:${REFUSAL_FALLBACK_MODEL}`);
+    assert.deepEqual(r.refusals, [{ model: "claude-haiku-5-5", category: "general_harms" }]);
   });
 
-  it("throws if the fallback also refuses", async () => {
+  it("first answer has no refusals", async () => {
+    const { client } = fakeClient([answer]);
+    const r = await new AnthropicDiagnosisModel(undefined, client).classify(input);
+    assert.deepEqual(r.refusals, []);
+  });
+
+  it("server-side fallback: records the model that answered and the one that refused", async () => {
+    const servedByFallback = () => ({
+      model: "claude-opus-5",
+      stop_reason: "end_turn",
+      content: [
+        { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-5" }, trigger: { type: "refusal", category: "bio" } },
+        { type: "text", text: JSON.stringify({ reason: "FORGOT", confidence: 0.3, rationale: "No attempt." }) },
+      ],
+    });
+    const { client } = fakeClient([servedByFallback]);
+    const r = await new AnthropicDiagnosisModel("claude-opus-5-5", client).classify(input);
+    assert.equal(r.model, "anthropic:claude-opus-5");
+    assert.deepEqual(r.refusals, [{ model: "claude-opus-5-5", category: "bio" }]);
+  });
+
+  it("refuses to name a model when the response does not say which one answered", async () => {
+    const noModel = () => ({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ reason: "FORGOT", confidence: 0.3, rationale: "x" }) }] });
+    const { client } = fakeClient([noModel]);
+    await assert.rejects(new AnthropicDiagnosisModel(undefined, client).classify(input), /does not name the model/);
+  });
+
+  it("throws if the fallback also refuses, carrying both refusals", async () => {
     const { client } = fakeClient([refusal, refusal]);
-    await assert.rejects(new AnthropicDiagnosisModel(undefined, client).classify(input), /refused/);
+    await assert.rejects(new AnthropicDiagnosisModel(undefined, client).classify(input), (e: unknown) => {
+      assert.ok(e instanceof ModelRefusedError);
+      assert.deepEqual(e.refusals, [
+        { model: "claude-haiku-5-5", category: "general_harms" },
+        { model: REFUSAL_FALLBACK_MODEL, category: "general_harms" },
+      ]);
+      return true;
+    });
   });
 
   it("frontier option uses server-side fallback and does not retry client-side", async () => {
@@ -102,6 +138,42 @@ describe("getDiagnosisModel", () => {
   it("returns null when no provider is set", () => {
     process.env.DIAGNOSIS_MODEL_PROVIDER = "";
     assert.equal(getDiagnosisModel(), null);
+  });
+
+  it("PROVIDER unset or none with MODEL set: still rules only, with a warning", () => {
+    for (const provider of ["", "none"]) {
+      process.env.DIAGNOSIS_MODEL_PROVIDER = provider;
+      process.env.DIAGNOSIS_MODEL = "claude-opus-5-5";
+      const warnings: unknown[] = [];
+      const original = console.warn;
+      console.warn = (...args: unknown[]) => void warnings.push(args);
+      try {
+        assert.equal(getDiagnosisModel(), null);
+      } finally {
+        console.warn = original;
+      }
+      assert.equal(warnings.length, 1);
+    }
+  });
+
+  it("PROVIDER anthropic with MODEL unset uses the default model", () => {
+    process.env.DIAGNOSIS_MODEL_PROVIDER = "anthropic";
+    process.env.DIAGNOSIS_MODEL = "";
+    const m = getDiagnosisModel();
+    assert.ok(m instanceof AnthropicDiagnosisModel);
+    assert.equal((m as unknown as { model: string }).model, DEFAULT_DIAGNOSIS_MODEL);
+  });
+
+  it("PROVIDER anthropic with MODEL set uses that model", () => {
+    process.env.DIAGNOSIS_MODEL_PROVIDER = "anthropic";
+    process.env.DIAGNOSIS_MODEL = "claude-opus-5-5";
+    assert.equal((getDiagnosisModel() as unknown as { model: string }).model, "claude-opus-5-5");
+  });
+
+  it("PROVIDER anthropic rejects a MODEL that is not a claude id", () => {
+    process.env.DIAGNOSIS_MODEL_PROVIDER = "anthropic";
+    process.env.DIAGNOSIS_MODEL = "gemini-2.5-flash-lite";
+    assert.throws(() => getDiagnosisModel(), /not an Anthropic model id/);
   });
 
   it("rejects an unknown provider", () => {

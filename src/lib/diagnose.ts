@@ -1,4 +1,4 @@
-import { getDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
+import { ModelRefusedError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
 import { isReason, type Classification } from "@/lib/reasons";
 import { assertNoPii, buildModelInput, knownIdentifiers, scrubText, type StallForModel } from "@/lib/redact";
@@ -12,9 +12,24 @@ const MAX_RATIONALE_CHARS = 1000;
 
 export type DiagnosisResult = Classification & {
   stallId: string;
+  // The model that actually produced the diagnosis; after a refusal fallback,
+  // the fallback model.
   model: string;
   source: "rules" | "model";
+  // Models that refused before `model` answered. Each one is also logged.
+  refusals: ModelRefusal[];
 };
+
+// Log lines carry the stall id, model ids and refusal category only: no input,
+// no output, no customer data.
+function logRefusals(log: (line: string) => void, stallId: string, refusals: ModelRefusal[], answeredBy: string | null) {
+  for (const r of refusals) {
+    log(
+      `[diagnose] stall ${stallId}: ${r.model} refused (${r.category ?? "no category"}); ` +
+        (answeredBy ? `answered by ${answeredBy}` : "no model answered, stall left undiagnosed"),
+    );
+  }
+}
 
 export type StallForDiagnosis = StallForModel & {
   id: string;
@@ -105,9 +120,15 @@ function assertFresh(stall: VerifiedStall, now: Date): void {
 // model configured, an unrecognised stall throws and stays undiagnosed.
 export async function diagnoseStall(
   stall: VerifiedStall,
-  deps: { store?: DiagnosisStore; model?: DiagnosisModel | null; now?: () => Date } = {},
+  deps: {
+    store?: DiagnosisStore;
+    model?: DiagnosisModel | null;
+    now?: () => Date;
+    log?: (line: string) => void;
+  } = {},
 ): Promise<DiagnosisResult> {
   const store = deps.store ?? supabaseDiagnosisStore();
+  const log = deps.log ?? ((line: string) => console.warn(line));
   const now = deps.now ?? (() => new Date());
   assertFresh(stall, now());
 
@@ -119,7 +140,7 @@ export async function diagnoseStall(
 
   const ruled = classifyGatewayResponse(gatewayResponse);
   if (ruled) {
-    result = { ...ruled, stallId: stall.id, model: RULES_MODEL_ID, source: "rules" };
+    result = { ...ruled, stallId: stall.id, model: RULES_MODEL_ID, source: "rules", refusals: [] };
   } else {
     const model = deps.model === undefined ? getDiagnosisModel() : deps.model;
     if (!model) {
@@ -130,8 +151,18 @@ export async function diagnoseStall(
     const input = buildModelInput(row, gatewayResponse);
     assertNoPii(input, knownIdentifiers(row));
 
-    const { output, model: modelId } = await model.classify(input);
-    result = { ...validateClassification(output), stallId: stall.id, model: modelId, source: "model" };
+    let classified;
+    try {
+      classified = await model.classify(input);
+    } catch (err) {
+      if (err instanceof ModelRefusedError) logRefusals(log, stall.id, err.refusals, null);
+      throw err;
+    }
+    const { output, model: modelId, refusals } = classified;
+    if (typeof modelId !== "string" || !modelId.trim()) throw new Error(`stall ${stall.id}: provider did not name the model that answered`);
+    if (!Array.isArray(refusals)) throw new Error(`stall ${stall.id}: provider did not report refusals`);
+    logRefusals(log, stall.id, refusals, modelId);
+    result = { ...validateClassification(output), stallId: stall.id, model: modelId, source: "model", refusals };
     assertFresh(stall, now());
   }
 
