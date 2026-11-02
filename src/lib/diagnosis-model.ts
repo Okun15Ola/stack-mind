@@ -25,6 +25,20 @@ export class ModelRefusedError extends Error {
   }
 }
 
+// Thrown when a model's reply could not be read as an answer and the provider
+// gave no signal why. This is deliberately NOT a refusal: the provider didn't
+// say the model declined, so recording one would assert something we don't
+// know. Carries model ids and attempt count only, never the reply.
+export class ModelUnparseableError extends Error {
+  constructor(
+    readonly model: string,
+    readonly attempts: number,
+  ) {
+    super(`model reply could not be parsed as a diagnosis (${model}, ${attempts} attempt${attempts === 1 ? "" : "s"})`);
+    this.name = "ModelUnparseableError";
+  }
+}
+
 // The one seam between the classifier and any LLM provider. A provider receives
 // input that has already passed the PII gate, and returns its raw output, the
 // id of the model that produced it, and any refusals on the way. Validation
@@ -158,12 +172,16 @@ export const DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b";
 
 type ChatClient = Pick<Groq, "chat" | "models">;
 
-// Groq's API has no refusal signal: no stop reason or field says a model
-// declined. A refusal shows up as a reply that is not an answer in the schema
-// (prose, empty, or an explicit `refusal` string if one is ever sent). Those
-// are reported as refusals, so the stall is flagged instead of a non-answer
-// being parsed or silently dropped.
-const NO_STRUCTURED_ANSWER = "no_structured_answer";
+// Groq's API has no refusal signal: no stop reason says a model declined.
+// So a reply that isn't an answer in the schema (prose, empty, not a JSON
+// object, no choice at all) is recorded as unparseable, never as a refusal.
+// Unparseable replies are retried once; only a second one flags the stall.
+// An explicit `refusal` field, if Groq ever sends one, is a reported refusal.
+const MAX_UNPARSEABLE_ATTEMPTS = 2;
+
+type Attempt =
+  | { kind: "answer"; output: object; served: string }
+  | { kind: "unparseable"; served: string };
 
 export class GroqDiagnosisModel implements DiagnosisModel {
   private served: Promise<void> | null = null;
@@ -189,6 +207,15 @@ export class GroqDiagnosisModel implements DiagnosisModel {
   async classify(input: ModelInput): Promise<ModelClassification> {
     await this.ensureServed();
 
+    let last: Attempt | null = null;
+    for (let attempt = 1; attempt <= MAX_UNPARSEABLE_ATTEMPTS; attempt++) {
+      last = await this.attempt(input);
+      if (last.kind === "answer") return { output: last.output, model: `groq:${last.served}`, refusals: [] };
+    }
+    throw new ModelUnparseableError(last!.served, MAX_UNPARSEABLE_ATTEMPTS);
+  }
+
+  private async attempt(input: ModelInput): Promise<Attempt> {
     const response = await this.client.chat.completions.create({
       model: this.model,
       max_completion_tokens: 4096,
@@ -207,11 +234,12 @@ export class GroqDiagnosisModel implements DiagnosisModel {
     if (!served) throw new Error("model response does not name the model that produced it");
 
     const choice = response.choices?.[0];
-    if (!choice) throw new ModelRefusedError([{ model: served, category: NO_STRUCTURED_ANSWER }]);
+    if (!choice) return { kind: "unparseable", served };
     if (choice.finish_reason === "length") throw new Error("model output truncated at max_completion_tokens");
 
     const message = choice.message as { content?: string | null; refusal?: unknown };
     if (typeof message.refusal === "string" && message.refusal.trim()) {
+      // The provider reported a refusal: that is a refusal, not retried.
       throw new ModelRefusedError([{ model: served, category: "refusal" }]);
     }
 
@@ -220,12 +248,10 @@ export class GroqDiagnosisModel implements DiagnosisModel {
       output = JSON.parse(message.content ?? "");
     } catch {
       // Never quote the reply: JSON.parse errors include the offending text.
-      throw new ModelRefusedError([{ model: served, category: NO_STRUCTURED_ANSWER }]);
+      return { kind: "unparseable", served };
     }
-    if (!output || typeof output !== "object" || Array.isArray(output)) {
-      throw new ModelRefusedError([{ model: served, category: NO_STRUCTURED_ANSWER }]);
-    }
-    return { output, model: `groq:${served}`, refusals: [] };
+    if (!output || typeof output !== "object" || Array.isArray(output)) return { kind: "unparseable", served };
+    return { kind: "answer", output, served };
   }
 }
 

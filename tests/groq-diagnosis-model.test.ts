@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { diagnoseStall, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
-import { DEFAULT_GROQ_MODEL, GroqDiagnosisModel, ModelRefusedError, OUTPUT_SCHEMA, getDiagnosisModel } from "@/lib/diagnosis-model";
+import { DEFAULT_GROQ_MODEL, GroqDiagnosisModel, ModelRefusedError, ModelUnparseableError, OUTPUT_SCHEMA, getDiagnosisModel } from "@/lib/diagnosis-model";
 import { PiiLeakError, type ModelInput } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
 
@@ -18,12 +18,12 @@ const input: ModelInput = {
 type Call = Record<string, unknown>;
 const ANSWER = { reason: "FORGOT", confidence: 0.3, rationale: "No attempt recorded." };
 
-function fakeGroq(reply: (params: Call) => object, served: string[] = [DEFAULT_GROQ_MODEL]) {
+function fakeGroq(reply: (params: Call, n: number) => object, served: string[] = [DEFAULT_GROQ_MODEL]) {
   const calls: Call[] = [];
   let listCalls = 0;
   const client = {
     models: { list: async () => (listCalls++, { data: served.map((id) => ({ id })) }) },
-    chat: { completions: { create: async (params: Call) => (calls.push(params), reply(params)) } },
+    chat: { completions: { create: async (params: Call) => (calls.push(params), reply(params, calls.length)) } },
   };
   return { client: client as unknown as ConstructorParameters<typeof GroqDiagnosisModel>[1], calls, listCalls: () => listCalls };
 }
@@ -71,24 +71,42 @@ describe("GroqDiagnosisModel", () => {
   });
 
   for (const [label, content] of [["prose", "I can't help with that."], ["empty", ""], ["a JSON array", "[]"]] as const) {
-    it(`a ${label} reply is surfaced as a refusal, never parsed or dropped`, async () => {
-      const { client } = fakeGroq(answer(content));
+    it(`a ${label} reply twice is unparseable, never a refusal`, async () => {
+      const { client, calls } = fakeGroq(answer(content));
       await assert.rejects(new GroqDiagnosisModel(undefined, client).classify(input), (e: unknown) => {
-        assert.ok(e instanceof ModelRefusedError);
-        assert.deepEqual(e.refusals, [{ model: DEFAULT_GROQ_MODEL, category: "no_structured_answer" }]);
+        assert.ok(e instanceof ModelUnparseableError, "must not be reported as anything else");
+        assert.ok(!(e instanceof ModelRefusedError));
+        assert.equal(e.model, DEFAULT_GROQ_MODEL);
+        assert.equal(e.attempts, 2);
         assert.ok(!e.message.includes("help with that"), "error quotes the reply");
         return true;
       });
+      assert.equal(calls.length, 2, "retried exactly once");
     });
   }
 
-  it("an explicit refusal field is surfaced as a refusal", async () => {
-    const { client } = fakeGroq((p) => ({ model: p.model, choices: [{ finish_reason: "stop", message: { content: null, refusal: "No." } }] }));
+  it("a reply with no choices is unparseable too", async () => {
+    const { client, calls } = fakeGroq((p) => ({ model: p.model, choices: [] }));
+    await assert.rejects(new GroqDiagnosisModel(undefined, client).classify(input), ModelUnparseableError);
+    assert.equal(calls.length, 2);
+  });
+
+  it("one unparseable reply then an answer: retried once, and the answer is used", async () => {
+    const { client, calls } = fakeGroq((p, n) => (n === 1 ? answer("not json")(p) : answer(ANSWER)(p)));
+    const r = await new GroqDiagnosisModel(undefined, client).classify(input);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(r.output, ANSWER);
+    assert.deepEqual(r.refusals, []);
+  });
+
+  it("an explicit refusal field is a reported refusal, and is not retried", async () => {
+    const { client, calls } = fakeGroq((p) => ({ model: p.model, choices: [{ finish_reason: "stop", message: { content: null, refusal: "No." } }] }));
     await assert.rejects(new GroqDiagnosisModel(undefined, client).classify(input), (e: unknown) => {
       assert.ok(e instanceof ModelRefusedError);
       assert.deepEqual(e.refusals, [{ model: DEFAULT_GROQ_MODEL, category: "refusal" }]);
       return true;
     });
+    assert.equal(calls.length, 1);
   });
 
   it("a truncated reply is an error, not a refusal", async () => {
@@ -129,17 +147,38 @@ describe("Groq through diagnoseStall", () => {
     assert.equal(saved[0].model, `groq:${DEFAULT_GROQ_MODEL}`);
   });
 
-  it("a Groq non-answer flags the stall via diagnosis_blocked and saves nothing", async () => {
-    const { client } = fakeGroq(answer("Sorry, I cannot do that."));
+  it("two unparseable Groq replies flag the stall as unparseable, not refused, and save nothing", async () => {
+    const { client, calls } = fakeGroq(answer("Sorry, I cannot do that."));
     const { s, saved, flags } = store();
     const lines: string[] = [];
     await assert.rejects(
       diagnoseStall(verified(stall), { store: s, model: new GroqDiagnosisModel(undefined, client), now: () => NOW, log: (l) => lines.push(l) }),
+      ModelUnparseableError,
+    );
+    assert.equal(calls.length, 2);
+    assert.equal(saved.length, 0);
+    assert.deepEqual(flags, [{ stallId: "stall-groq", reason: `model_unparseable: ${DEFAULT_GROQ_MODEL} (2 attempts)` }]);
+    assert.ok(!flags[0].reason.includes("refused"));
+    assert.ok(!lines.some((l) => l.includes("refused")), "logged as a refusal");
+    assert.ok(lines.some((l) => l.includes("diagnosis blocked (model_unparseable")));
+  });
+
+  it("a reported Groq refusal flags the stall as refused", async () => {
+    const { client } = fakeGroq((p) => ({ model: p.model, choices: [{ finish_reason: "stop", message: { content: null, refusal: "No." } }] }));
+    const { s, flags } = store();
+    await assert.rejects(
+      diagnoseStall(verified(stall), { store: s, model: new GroqDiagnosisModel(undefined, client), now: () => NOW, log: () => {} }),
       ModelRefusedError,
     );
-    assert.equal(saved.length, 0);
-    assert.deepEqual(flags, [{ stallId: "stall-groq", reason: `model_refused: ${DEFAULT_GROQ_MODEL} (no_structured_answer)` }]);
-    assert.ok(lines.some((l) => l.includes(`${DEFAULT_GROQ_MODEL} refused (no_structured_answer)`)));
+    assert.deepEqual(flags, [{ stallId: "stall-groq", reason: `model_refused: ${DEFAULT_GROQ_MODEL} (refusal)` }]);
+  });
+
+  it("an unparseable reply followed by an answer is saved, with no flag", async () => {
+    const { client } = fakeGroq((p, n) => (n === 1 ? answer("oops")(p) : answer(ANSWER)(p)));
+    const { s, saved, flags } = store();
+    await diagnoseStall(verified(stall), { store: s, model: new GroqDiagnosisModel(undefined, client), now: () => NOW, log: () => {} });
+    assert.equal(saved.length, 1);
+    assert.deepEqual(flags, []);
   });
 
   it("the PII gate runs before Groq is called: a leak means zero Groq calls and a flag", async () => {

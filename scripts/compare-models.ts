@@ -20,7 +20,7 @@
 // ANTHROPIC_API_KEY for the models being compared.
 
 import { validateClassification, type StallForDiagnosis } from "@/lib/diagnose";
-import { DEFAULT_GROQ_MODEL, ModelRefusedError, createDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
+import { DEFAULT_GROQ_MODEL, ModelRefusedError, ModelUnparseableError, createDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
 import { classifyGatewayResponse } from "@/lib/gateway-rules";
 import { assertNoPii, buildModelInput, knownIdentifiers } from "@/lib/redact";
 import { reverifyStall } from "@/lib/reverify";
@@ -72,7 +72,12 @@ async function compare(reference: string, candidates: Candidate[]): Promise<stri
       const refusals = r.refusals.map((x) => `${x.model} (${x.category ?? "no category"})`).join("; ") || "none";
       lines.push(`${prefix} | **${c.reason}** ${c.confidence} | ${r.model} | ${refusals} | ${cell(c.rationale)} |`);
     } catch (err) {
-      const what = err instanceof ModelRefusedError ? `refused by all: ${err.message}` : `error: ${err instanceof Error ? err.message : "unknown"}`;
+      const what =
+        err instanceof ModelRefusedError
+          ? `refused by all: ${err.message}`
+          : err instanceof ModelUnparseableError
+            ? `unparseable: ${err.message}`
+            : `error: ${err instanceof Error ? err.message : "unknown"}`;
       lines.push(`${prefix} | ${cell(what)} | | | |`);
     }
   }
