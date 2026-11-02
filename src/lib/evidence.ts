@@ -1,5 +1,5 @@
 import { INSUFFICIENT_EVIDENCE, type Outcome, type Reason } from "@/lib/reasons";
-import type { ModelInput } from "@/lib/redact";
+import type { ModelInput, SectionKey } from "@/lib/redact";
 
 // The evidence a diagnosis lacked, derived by code from the sections the
 // model input marks `available: false`. Never written by the model: it is a
@@ -8,13 +8,20 @@ import type { ModelInput } from "@/lib/redact";
 export const EVIDENCE_GAPS = ["behaviour_trail", "checkout_log", "card_details"] as const;
 export type EvidenceGap = (typeof EVIDENCE_GAPS)[number];
 
-// Order is fixed so stored lists compare equal.
+// Every section of the model input has a gap code. A new section in
+// ModelInput won't compile until it is added here.
+const GAP_FOR_SECTION: Record<SectionKey, EvidenceGap> = {
+  behaviour_trail: "behaviour_trail",
+  checkout: "checkout_log",
+  card: "card_details",
+};
+
+// Order is fixed (EVIDENCE_GAPS order) so stored lists compare equal.
 export function evidenceGaps(input: ModelInput): EvidenceGap[] {
-  const gaps: EvidenceGap[] = [];
-  if (!input.behaviour_trail.available) gaps.push("behaviour_trail");
-  if (!input.checkout.available) gaps.push("checkout_log");
-  if (!input.card.available) gaps.push("card_details");
-  return gaps;
+  const missing = new Set(
+    (Object.keys(GAP_FOR_SECTION) as SectionKey[]).filter((k) => !input[k].available).map((k) => GAP_FOR_SECTION[k]),
+  );
+  return EVIDENCE_GAPS.filter((g) => missing.has(g));
 }
 
 // What the merchant is shown, for an INSUFFICIENT_EVIDENCE diagnosis.

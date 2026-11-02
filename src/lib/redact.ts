@@ -87,10 +87,32 @@ export function transactionFromPayload(payload: unknown): Json {
 
 const MAX_HISTORY_STEPS = 30;
 
-// A fact we could not collect. Sent explicitly, with the reason it is
-// missing, so the model never reads a gap in our pipeline as evidence about
-// the buyer. Never send a bare null for a whole section.
+// availability:begin
+// The ONE place that decides whether a section of model input is available.
+// Every section goes through section(); nothing else may write
+// `available: true` or `available: false` (tests/section-availability.test.ts
+// fails if anything does).
+//
+// A section is available only if at least one of its fields has a value: not
+// null, not undefined, not an empty array. "Paystack sent the key" is not
+// enough: `authorization: {}` or a log whose fields are all null is a gap.
+// A gap is sent with the reason it's missing, so the model never reads a hole
+// in our pipeline as evidence about the buyer. Never send a bare null for a
+// whole section.
 export type Unavailable = { available: false; why: string };
+export type Section<T extends object> = ({ available: true } & T) | Unavailable;
+
+function hasValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
+export function section<T extends object>(fields: T | null | undefined, why: string): Section<T> {
+  if (fields && Object.values(fields).some(hasValue)) return { available: true, ...fields };
+  return { available: false, why };
+}
+// availability:end
 
 export const UNAVAILABLE = {
   behaviourTrail:
@@ -106,30 +128,29 @@ export type ModelInput = {
   currency: string | null;
   payment_channel: string | null;
   is_subscription_renewal: boolean;
-  card:
-    | {
-        available: true;
-        type: string | null;
-        brand: string | null;
-        bank: string | null;
-        country_code: string | null;
-      }
-    | Unavailable;
-  checkout:
-    | {
-        available: true;
-        time_spent_seconds: number | null;
-        attempts: number | null;
-        errors: number | null;
-        mobile: boolean | null;
-        steps: { type: string | null; message: string | null; at_second: number | null }[];
-      }
-    | Unavailable;
+  card: Section<{
+    type: string | null;
+    brand: string | null;
+    bank: string | null;
+    country_code: string | null;
+  }>;
+  checkout: Section<{
+    time_spent_seconds: number | null;
+    attempts: number | null;
+    errors: number | null;
+    mobile: boolean | null;
+    steps: { type: string | null; message: string | null; at_second: number | null }[];
+  }>;
   // Opada's own record of what the buyer did on the merchant's site. Not
-  // built yet, so it is unavailable for every merchant. When it exists, this
-  // becomes a union with the trail's facts, set per merchant.
-  behaviour_trail: Unavailable;
+  // built yet, so it is unavailable for every merchant. Its fields arrive
+  // with the behaviour-trail chunk.
+  behaviour_trail: Section<{ events: never[] }>;
 };
+
+// The keys of ModelInput that are sections. Adding a section to ModelInput
+// adds it here, and src/lib/evidence.ts then fails to compile until the new
+// section has an evidence-gap code.
+export type SectionKey = { [K in keyof ModelInput]: ModelInput[K] extends { available: boolean } ? K : never }[keyof ModelInput];
 
 export type StallForModel = {
   gateway_response: string | null;
@@ -171,21 +192,10 @@ export function buildModelInput(stall: StallForModel, gatewayResponse: string | 
     currency: str(stall.currency) ?? str(tx.currency),
     payment_channel: str(tx.channel),
     is_subscription_renewal: stall.event_type === "invoice.payment_failed",
-    // A section is available only if Paystack actually filled something in.
-    // Paystack sends `authorization: {}` on transactions where no card was
-    // used; reporting that as available-with-nulls would hand the model a
-    // row of nulls to read as evidence.
-    card: card && hasAnyValue(card) ? { available: true, ...card } : { available: false, why: UNAVAILABLE.card },
-    checkout:
-      checkout && (hasAnyValue({ ...checkout, steps: null }) || steps.length > 0)
-        ? { available: true, ...checkout }
-        : { available: false, why: UNAVAILABLE.checkout },
-    behaviour_trail: { available: false, why: UNAVAILABLE.behaviourTrail },
+    card: section(card, UNAVAILABLE.card),
+    checkout: section(checkout, UNAVAILABLE.checkout),
+    behaviour_trail: section<{ events: never[] }>(null, UNAVAILABLE.behaviourTrail),
   };
-}
-
-function hasAnyValue(section: Record<string, unknown>): boolean {
-  return Object.values(section).some((v) => v !== null && v !== undefined);
 }
 
 // Identifiers the stall is known to carry. Used by the gate to catch leaks
