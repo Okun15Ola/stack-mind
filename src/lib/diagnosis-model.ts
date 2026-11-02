@@ -66,7 +66,14 @@ export class AnthropicDiagnosisModel implements DiagnosisModel {
     const text = response.content
       .map((block) => (block.type === "text" ? block.text : ""))
       .join("");
-    return { output: JSON.parse(text), model: `anthropic:${response.model}` };
+    let output: unknown;
+    try {
+      output = JSON.parse(text);
+    } catch {
+      // JSON.parse errors quote the offending text; never surface it.
+      throw new Error("model output is not valid JSON");
+    }
+    return { output, model: `anthropic:${response.model}` };
   }
 }
 

@@ -9,6 +9,7 @@
     "lint": "eslint",
     "export:test-set": "node --env-file=.env.local scripts/export-test-set.mts",
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "test:pii": "node --import tsx --test tests/redact.test.ts",
     "diagnose": "node --env-file=.env.local --import tsx scripts/diagnose-stall.ts"
   },
   "dependencies": {

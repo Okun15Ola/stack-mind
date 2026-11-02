@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { diagnoseStall, validateClassification, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
-import type { DiagnosisModel } from "@/lib/diagnosis-model";
+import { getDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
 import { classifyGatewayResponse } from "@/lib/gateway-rules";
 import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText } from "@/lib/redact";
 import type { ModelInput } from "@/lib/redact";
@@ -218,7 +218,10 @@ describe("PII gate", () => {
   });
 
   it("scrubText redacts each kind", () => {
-    assert.equal(scrubText("a@b.co 10.0.0.1 CUS_x1 +2348012345678"), "[email] [ip] [code] [number]");
+    assert.equal(
+      scrubText("a@b.co 10.0.0.1 CUS_x1 +2348012345678 4084 0840 8408 4081 0123456789"),
+      "[email] [ip] [code] [phone] [card] [number]",
+    );
   });
 });
 
@@ -251,5 +254,38 @@ describe("guards", () => {
     const c = validateClassification({ reason: "FORGOT", confidence: 0.123456, rationale: "Customer x@y.io never attempted." });
     assert.equal(c.confidence, 0.123);
     assert.ok(!c.rationale.includes("x@y.io"));
+  });
+});
+
+describe("rules-only path", () => {
+  function withProvider<T>(value: string | undefined, fn: () => T): T {
+    const before = process.env.DIAGNOSIS_MODEL_PROVIDER;
+    if (value === undefined) delete process.env.DIAGNOSIS_MODEL_PROVIDER;
+    else process.env.DIAGNOSIS_MODEL_PROVIDER = value;
+    try {
+      return fn();
+    } finally {
+      if (before === undefined) delete process.env.DIAGNOSIS_MODEL_PROVIDER;
+      else process.env.DIAGNOSIS_MODEL_PROVIDER = before;
+    }
+  }
+
+  for (const value of [undefined, "", "none", " NONE "]) {
+    it(`DIAGNOSIS_MODEL_PROVIDER=${JSON.stringify(value)} means no model`, () => {
+      assert.equal(withProvider(value, getDiagnosisModel), null);
+    });
+  }
+
+  it("an unknown provider throws rather than falling back", () => {
+    assert.throws(() => withProvider("vertex", getDiagnosisModel), /unknown DIAGNOSIS_MODEL_PROVIDER/);
+  });
+
+  it("with no provider set, a rule-classified stall still diagnoses", async () => {
+    const { store, saved } = memoryStore([realAbandoned]);
+    const r = await withProvider(undefined, () =>
+      diagnoseStall(verified(realAbandoned, "abandoned"), { store, now: () => NOW }),
+    );
+    assert.equal(r.source, "rules");
+    assert.equal(saved[0].reason, "CARD_FAILING");
   });
 });
