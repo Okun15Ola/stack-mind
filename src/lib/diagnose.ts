@@ -1,6 +1,7 @@
 import { ModelRefusedError, ModelUnparseableError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
 import { JOIN_TAIL_MS, selectTrailEvents, trailRefsFromTransaction, type StoredEvent, type TrailRefs, type TrailSelection } from "@/lib/behaviour/trail";
+import { assertSingleMerchant } from "@/lib/behaviour/merchants";
 import { evidenceGaps, type EvidenceGap } from "@/lib/evidence";
 import { isOutcome, type Classification } from "@/lib/reasons";
 import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, transactionFromPayload, type StallForModel } from "@/lib/redact";
@@ -62,6 +63,9 @@ export interface DiagnosisStore {
   // Stored behaviour events for these refs, at or before `until`. The join
   // itself (selectTrailEvents) is pure and runs on what this returns.
   loadBehaviourEvents(refs: TrailRefs, until: Date): Promise<StoredEvent[]>;
+  // How many merchants have emitter keys. The join refuses to run above one
+  // (src/lib/behaviour/merchants.ts).
+  countMerchants(): Promise<number>;
   // Marks the stall as blocked from diagnosis. Never changes its status: the
   // stall stays undiagnosed and is never marked resolved. `reason` carries the
   // kind of block and model ids or field paths only, never customer data.
@@ -97,6 +101,12 @@ export function supabaseDiagnosisStore(): DiagnosisStore {
         .eq("id", row.stall_id)
         .in("status", ["new", "diagnosing"]);
       if (statusError) throw new Error(`diagnose status ${row.stall_id}: ${statusError.message}`);
+    },
+
+    async countMerchants() {
+      const { data, error } = await supabaseAdmin().rpc("opada_merchant_count");
+      if (error) throw new Error(`merchant count: ${error.message}`);
+      return typeof data === "number" ? data : Number.NaN;
     },
 
     async loadBehaviourEvents(refs, until) {
@@ -152,6 +162,8 @@ async function loadTrail(store: DiagnosisStore, row: StallForDiagnosis): Promise
   if (!refs.buyerRef && !refs.sessionRef) return { kind: "no_ref" };
   const createdAt = row.stalled_at ? new Date(row.stalled_at) : null;
   if (!createdAt || Number.isNaN(createdAt.getTime())) return { kind: "no_events" };
+  // Hard gate: no merchant filter exists yet, so never join with >1 merchant.
+  assertSingleMerchant(await store.countMerchants());
   const candidates = await store.loadBehaviourEvents(refs, new Date(createdAt.getTime() + JOIN_TAIL_MS));
   return selectTrailEvents(refs, createdAt, candidates);
 }
