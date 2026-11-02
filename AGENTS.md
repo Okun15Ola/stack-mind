@@ -44,6 +44,13 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **`diagnoses.model` names the model that actually produced the answer**, read from the API response, never the model that was requested. After a fallback it is the fallback model. If a response doesn't say which model answered, diagnosis throws rather than guess.
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
 - **A gap in our data is never sent as a fact about the buyer.** When a section of model input can't be filled (no Paystack checkout log, no card details, behaviour trail not connected for the merchant), send `{ "available": false, "why": … }` saying so, never a bare `null`. The system prompt tells the model unavailable data is not evidence either way. Real case: `T169809891137085`, where `checkout: null` was read as "no checkout activity, so the payment was likely never attempted".
+- **The model may return `INSUFFICIENT_EVIDENCE` instead of guessing.** It is an outcome, not a reason (`OUTCOMES` vs `REASONS` in `src/lib/reasons.ts`). The gateway rules never return it, and the database refuses it on a `rules:` row.
+  - **What would be needed is computed by code, never written by the model:** `evidenceGaps()` in `src/lib/evidence.ts` reads the input's `available: false` sections and is stored in `diagnoses.evidence_gaps`. The merchant sees `describeEvidenceNeeded()`.
+  - **It maps to no action.** The database refuses to create an action on an `INSUFFICIENT_EVIDENCE` diagnosis.
+  - **The metric** is the view `diagnosis_insufficient_evidence_rate`: the share of model diagnoses that couldn't be determined, split by whether the behaviour trail was available.
+- **Requirements for the Mandate when it's built** (not before):
+  - `INSUFFICIENT_EVIDENCE` maps to no remedy.
+  - Every remedy has an owner-set minimum confidence, as a second line of defence behind `INSUFFICIENT_EVIDENCE`. Below it, no action.
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
 
 ### Customer data

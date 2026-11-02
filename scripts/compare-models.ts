@@ -21,7 +21,9 @@
 
 import { validateClassification, type StallForDiagnosis } from "@/lib/diagnose";
 import { DEFAULT_GROQ_MODEL, ModelRefusedError, ModelUnparseableError, createDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
+import { evidenceGaps } from "@/lib/evidence";
 import { classifyGatewayResponse } from "@/lib/gateway-rules";
+import { INSUFFICIENT_EVIDENCE } from "@/lib/reasons";
 import { assertNoPii, buildModelInput, knownIdentifiers } from "@/lib/redact";
 import { reverifyStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -70,7 +72,8 @@ async function compare(reference: string, candidates: Candidate[]): Promise<stri
       const r = await model.classify(input);
       const c = validateClassification(r.output);
       const refusals = r.refusals.map((x) => `${x.model} (${x.category ?? "no category"})`).join("; ") || "none";
-      lines.push(`${prefix} | **${c.reason}** ${c.confidence} | ${r.model} | ${refusals} | ${cell(c.rationale)} |`);
+      const needed = c.reason === INSUFFICIENT_EVIDENCE ? ` (needs: ${evidenceGaps(input).join(", ") || "none listed"})` : "";
+      lines.push(`${prefix} | **${c.reason}** ${c.confidence}${needed} | ${r.model} | ${refusals} | ${cell(c.rationale)} |`);
     } catch (err) {
       const what =
         err instanceof ModelRefusedError
