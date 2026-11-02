@@ -1,0 +1,29 @@
+# Runs on every push and pull request. The PII gate in src/lib/redact.ts is the
+# only thing keeping buyer data out of model prompts, so its tests run as their
+# own required step, before the rest of the suite.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: PII gate tests
+        run: npm run test:pii
+      - name: All tests
+        run: npm test
+      - name: Lint
+        run: npm run lint
