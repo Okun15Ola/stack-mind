@@ -29,7 +29,7 @@ describe("model input states what is unavailable", () => {
   it("says the behaviour trail is unavailable, and that its absence is not evidence", () => {
     const input = buildModelInput(noTrail, noTrail.gateway_response);
     assert.deepEqual(input.behaviour_trail, { available: false, why: UNAVAILABLE.behaviourTrail });
-    assert.match(input.behaviour_trail.why, /not connected/);
+    assert.match(input.behaviour_trail.why, /no Opada buyer reference/);
     assert.match(input.behaviour_trail.why, /not evidence/);
   });
 

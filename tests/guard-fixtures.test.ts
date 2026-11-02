@@ -12,6 +12,7 @@ import {
   availabilityGuardViolations,
   entrypointNamingViolations,
   liveEntrypointViolations,
+  purgeCallViolations,
   paystackGuardViolations,
   sectionsMissingAvailability,
   type SourceFile,
@@ -113,4 +114,16 @@ describe("live-key guards: negative fixtures", () => {
     ["an entrypoint that never asks for its key", [file("poller", `const result = await pollPaystack(secretKey);`)]],
   ];
   for (const [label, files] of cases) it(label, () => bites(entrypointNamingViolations(files), label));
+});
+
+describe("retention guard: negative fixtures", () => {
+  it("a route that only checks retention passes", () => {
+    assert.deepEqual(purgeCallViolations([lib(`await supabaseAdmin().rpc("behaviour_retention_status");`)]), []);
+  });
+  for (const [label, text] of [
+    ["the cron route calling the purge over rpc", `await supabaseAdmin().rpc("purge_behaviour_events");`],
+    ["raw SQL calling the purge", "await db.query(`select public.purge_behaviour_events()`);"],
+  ] as const) {
+    it(label, () => bites(purgeCallViolations([lib(text)]), label));
+  }
 });

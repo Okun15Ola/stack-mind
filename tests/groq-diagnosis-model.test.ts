@@ -134,6 +134,7 @@ describe("Groq through diagnoseStall", () => {
     const saved: DiagnosisRow[] = [];
     const flags: { stallId: string; reason: string }[] = [];
     const s: DiagnosisStore = {
+      loadBehaviourEvents: async () => [],
       loadStall: async (id) => ({ ...stall, id }),
       saveDiagnosis: async (row) => void saved.push(row),
       flagBlocked: async (stallId, reason) => void flags.push({ stallId, reason }),
