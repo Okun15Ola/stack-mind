@@ -60,6 +60,8 @@ Opada-Signature: v1=<base64url Ed25519 signature of "<timestamp>.<raw body>">
 - **The timestamp must be within ±300 seconds** of Opada's clock, or the request is rejected (`401 timestamp_outside_window`). Keep your server clock synced.
 - **Batches** of 1 to 100 events, at most 64 KB. Each `event_id` (ULID or UUID) is stored once, so resending is safe.
 - **Fire-and-forget,** off the request path, with a short timeout. A slow or failed Opada must never slow or block the buyer's page or checkout.
+- **On `503 retention_overdue`: drop the events, log locally, and do NOT retry or queue them.** This status means Opada has deliberately stopped collecting, because it can't currently prove it is deleting old events. Retrying defeats that, and turns one stalled cleanup job into a retry storm from every emitter. Log the drop (status code and count only, never the events or the buyer), then carry on. Collection resumes on its own once Opada's purge is running again; no action is needed on your side.
+- **Other failures** (network errors, timeouts, `5xx` other than `retention_overdue`): drop and log too. The trail is best-effort evidence, and no event is worth slowing a checkout or building a local backlog for.
 
 ```js
 import { createPrivateKey, sign } from "node:crypto";
@@ -79,7 +81,15 @@ fetch(`${OPADA_URL}/api/v1/behaviour-events`, {
   },
   body,                                                 // the same string that was signed
   signal: AbortSignal.timeout(2000),
-}).catch(() => {}); // never let this affect the buyer
+})
+  .then(async (res) => {
+    if (res.status === 202) return;
+    const code = (await res.json().catch(() => ({}))).error;
+    // 503 retention_overdue: Opada stopped collecting on purpose. Drop the
+    // events. Do NOT retry and do NOT queue them.
+    log.warn("opada events dropped", { status: res.status, error: code, count: events.length });
+  })
+  .catch(() => log.warn("opada events dropped", { status: "network", count: events.length })); // never retry, never affect the buyer
 ```
 
 **Events** (no free text anywhere; unknown fields and values are rejected):
@@ -95,4 +105,7 @@ fetch(`${OPADA_URL}/api/v1/behaviour-events`, {
 
 **Envelope:** `event_id`, `type`, `occurred_at` (RFC 3339 UTC, within the last 7 days and no more than 5 minutes ahead), `buyer_ref`, optional `session_ref`, optional `device` (`mobile`, `tablet`, `desktop`), `properties`.
 
-**Response:** `202 { accepted, duplicates, rejected: [{ event_id, error }] }`. Valid events in a batch are kept even if others are rejected. `401` means authentication failed, with an error code that names the rule.
+**Response:**
+- `202 { accepted, duplicates, rejected: [{ event_id, error }] }`. Valid events in a batch are kept even if others are rejected.
+- `401`: authentication failed, with an error code that names the rule. Fix your key or clock; don't retry the same request.
+- `503 { error: "retention_overdue" }`: Opada has deliberately stopped collecting. **Drop, log locally, never retry, never queue.**
