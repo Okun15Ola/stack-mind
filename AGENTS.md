@@ -99,7 +99,8 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Event `source` is set by Opada from the credential, never from the body.** It reaches the model input on every event. Client-sourced events are weak evidence and, per the Mandate requirements, never enough alone to trigger an action.
 - **No free text anywhere in an event.** Unknown fields, properties and enum values are rejected, and errors never echo values.
 - **The trail is forward-only.** A transaction joins only if `opada_buyer_ref` was in its Paystack metadata at creation. The join is on `session_ref`, else on `buyer_ref` from the buyer's last `checkout_started`.
-- **Retention is 30 days.** `purge_behaviour_events()` runs with every cron poll.
+- **Retention is 30 days, and it's a privacy commitment.** `purge_behaviour_events()` runs **daily from pg_cron inside the database**, never from app code and never on the cron poller (GitHub Actions runs that far less often than scheduled, and disables it after 60 days of repo inactivity). `tests/guards.ts` fails if any app code calls the purge.
+  - **Every run is recorded in `retention_runs`.** A purge that hasn't run in over 48 hours (or whose status can't be read) is a failure. The ingest endpoint refuses new events (`503 retention_overdue`), because we don't collect what we can't delete. The cron poll route returns `500`, which fails the GitHub workflow.
 - **What a forged event buys an attacker:** a polluted trail, so a wrong diagnosis and possibly a wrong message to a real buyer. Not money.
 
 ## Payment providers: direction, not yet built

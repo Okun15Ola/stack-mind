@@ -9,6 +9,7 @@ import { handleBehaviourEvents, type EventSink, type StoredRow } from "@/lib/beh
 
 const NOW = new Date("2026-11-02T10:00:00Z");
 const NOW_S = Math.floor(NOW.getTime() / 1000);
+const fresh = { lastPurge: async () => new Date(NOW.getTime() - 3_600_000) };
 
 function keypair() {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -70,7 +71,7 @@ async function rejected(headers: Headers, body: string, error: string, keys = st
   const r = await verifyEmitterRequest(headers, bytes(body), NOW, keys);
   assert.deepEqual(r, { ok: false, error });
   const { sink, stored } = memorySink();
-  const res = await handleBehaviourEvents(headers, bytes(body), NOW, { keys, sink });
+  const res = await handleBehaviourEvents(headers, bytes(body), NOW, { keys, sink, retention: fresh });
   assert.equal(res.status, 401);
   assert.deepEqual(res.body, { error });
   assert.equal(stored.length, 0, "an unauthenticated request stored events");
@@ -131,7 +132,7 @@ describe("negative fixtures: each must be rejected", () => {
 describe("accepted requests", () => {
   it("a correctly signed request inside the window is stored, with source and merchant set by Opada", async () => {
     const { sink, stored } = memorySink();
-    const res = await handleBehaviourEvents(signed(BODY), bytes(BODY), NOW, { keys: storeWith(registered), sink });
+    const res = await handleBehaviourEvents(signed(BODY), bytes(BODY), NOW, { keys: storeWith(registered), sink, retention: fresh });
     assert.equal(res.status, 202);
     assert.deepEqual(res.body, { accepted: 1, duplicates: 0, rejected: [] });
     assert.equal(stored[0].source, "server");
@@ -154,7 +155,7 @@ describe("accepted requests", () => {
 
   it("a replay inside the window is deduplicated by event_id: stored once", async () => {
     const { sink, stored } = memorySink();
-    const deps = { keys: storeWith(registered), sink };
+    const deps = { keys: storeWith(registered), sink, retention: fresh };
     const headers = signed(BODY);
     const first = await handleBehaviourEvents(headers, bytes(BODY), NOW, deps);
     const replay = await handleBehaviourEvents(headers, bytes(BODY), NOW, deps);
@@ -166,7 +167,7 @@ describe("accepted requests", () => {
   it("a body field named `source` is rejected, so a client can never claim to be a server", async () => {
     const body = BODY.replace('"type":"info_viewed"', '"type":"info_viewed","source":"server"');
     const { sink, stored } = memorySink();
-    const res = await handleBehaviourEvents(signed(body), bytes(body), NOW, { keys: storeWith(registered), sink });
+    const res = await handleBehaviourEvents(signed(body), bytes(body), NOW, { keys: storeWith(registered), sink, retention: fresh });
     assert.equal(res.status, 202);
     assert.deepEqual((res.body as { rejected: unknown[] }).rejected, [{ event_id: "01JBX7Q8M2ZK5D3W0V9T4R6Y1A", error: "unknown_field" }]);
     assert.equal(stored.length, 0);
@@ -174,7 +175,39 @@ describe("accepted requests", () => {
 
   it("an oversized body is refused before authentication", async () => {
     const big = "x".repeat(64 * 1024 + 1);
-    const res = await handleBehaviourEvents(signed(big), bytes(big), NOW, { keys: storeWith(registered), sink: memorySink().sink });
+    const res = await handleBehaviourEvents(signed(big), bytes(big), NOW, { keys: storeWith(registered), sink: memorySink().sink, retention: fresh });
     assert.equal(res.status, 413);
+  });
+});
+
+describe("retention: don't collect what we can't delete", () => {
+  for (const [label, lastPurge] of [
+    ["the purge never ran", async () => null],
+    ["the purge last ran 49 hours ago", async () => new Date(NOW.getTime() - 49 * 3_600_000)],
+    ["the purge status can't be read", async () => { throw new Error("db down"); }],
+  ] as const) {
+    it(`${label}: a valid signed request is refused with 503 and nothing is stored`, async () => {
+      const { sink, stored } = memorySink();
+      const res = await handleBehaviourEvents(signed(BODY), bytes(BODY), NOW, { keys: storeWith(registered), sink, retention: { lastPurge } });
+      assert.deepEqual(res, { status: 503, body: { error: "retention_overdue" } });
+      assert.equal(stored.length, 0);
+    });
+  }
+
+  it("a purge 47 hours ago is fine", async () => {
+    const { sink } = memorySink();
+    const res = await handleBehaviourEvents(signed(BODY), bytes(BODY), NOW, {
+      keys: storeWith(registered),
+      sink,
+      retention: { lastPurge: async () => new Date(NOW.getTime() - 47 * 3_600_000) },
+    });
+    assert.equal(res.status, 202);
+  });
+
+  it("an unauthenticated request is still a 401, not a retention answer", async () => {
+    const h = signed(BODY);
+    h.delete("opada-signature");
+    const res = await handleBehaviourEvents(h, bytes(BODY), NOW, { keys: storeWith(registered), sink: memorySink().sink, retention: { lastPurge: async () => null } });
+    assert.equal(res.status, 401);
   });
 });

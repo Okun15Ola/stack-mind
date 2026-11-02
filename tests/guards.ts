@@ -149,3 +149,15 @@ export function entrypointNamingViolations(files: SourceFile[]): string[] {
   }
   return out;
 }
+
+// --- Retention: the purge runs in pg_cron, never from app code -----------------
+// Retention must not ride on the cron poller (or any app path). App code may
+// only CHECK the purge (behaviour_retention_status), never run it.
+
+export function purgeCallViolations(files: SourceFile[]): string[] {
+  return files.flatMap((f) =>
+    f.text
+      .split("\n")
+      .flatMap((line, i) => (/purge_behaviour_events/.test(line) ? [`${f.path}:${i + 1}: purge called from app code: ${line.trim()}`] : [])),
+  );
+}

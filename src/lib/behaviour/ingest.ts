@@ -1,10 +1,12 @@
 import { verifyEmitterRequest, type EmitterKey, type EmitterKeyStore } from "@/lib/behaviour/auth";
+import { retentionStatus, type RetentionCheck } from "@/lib/behaviour/retention";
 import { MAX_BODY_BYTES, parseBatch, type BehaviourEvent, type RejectionCode } from "@/lib/behaviour/contract";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 // POST /api/v1/behaviour-events, independent of Next so it can be tested.
-// Order: size, authentication (on the raw bytes), then parsing. Nothing is
-// stored unless the request is authenticated.
+// Order: size, authentication (on the raw bytes), the retention check, then
+// parsing. Nothing is stored unless the request is authenticated and the
+// 30-day purge is running.
 
 export type StoredRow = BehaviourEvent & { merchant_id: string; emitter_id: string; source: "server" };
 
@@ -20,12 +22,22 @@ export async function handleBehaviourEvents(
   headers: { get(name: string): string | null },
   rawBody: Uint8Array,
   now: Date,
-  deps: { keys: EmitterKeyStore; sink: EventSink },
+  deps: { keys: EmitterKeyStore; sink: EventSink; retention: RetentionCheck },
 ): Promise<IngestResponse> {
   if (rawBody.byteLength > MAX_BODY_BYTES) return { status: 413, body: { error: "body_too_large" } };
 
   const auth = await verifyEmitterRequest(headers, rawBody, now, deps.keys);
   if (!auth.ok) return { status: 401, body: { error: auth.error } };
+
+  // Don't collect what we can't delete: while the 30-day purge is overdue (or
+  // its status can't be read), refuse new events.
+  let overdue = true;
+  try {
+    overdue = retentionStatus(await deps.retention.lastPurge(), now).overdue;
+  } catch {
+    overdue = true;
+  }
+  if (overdue) return { status: 503, body: { error: "retention_overdue" } };
 
   const batch = parseBatch(Buffer.from(rawBody).toString("utf8"), now);
   if (!batch.ok) return { status: batch.status, body: { error: batch.error } };

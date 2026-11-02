@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { handleBehaviourEvents, supabaseEmitterKeyStore, supabaseEventSink } from "@/lib/behaviour/ingest";
 import { MAX_BODY_BYTES } from "@/lib/behaviour/contract";
+import { supabaseRetentionCheck } from "@/lib/behaviour/retention";
 
 // Behaviour-trail ingest, v1. Public contract: issue #12 (Ed25519-signed).
 export async function POST(req: Request) {
@@ -12,6 +13,7 @@ export async function POST(req: Request) {
     const res = await handleBehaviourEvents(req.headers, raw, new Date(), {
       keys: supabaseEmitterKeyStore(),
       sink: supabaseEventSink(),
+      retention: supabaseRetentionCheck(),
     });
     return NextResponse.json(res.body, { status: res.status });
   } catch (err) {
