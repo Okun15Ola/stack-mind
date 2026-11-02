@@ -1,7 +1,7 @@
 import { ModelRefusedError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
 import { isReason, type Classification } from "@/lib/reasons";
-import { assertNoPii, buildModelInput, knownIdentifiers, scrubText, type StallForModel } from "@/lib/redact";
+import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, type StallForModel } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -47,7 +47,12 @@ export type DiagnosisRow = {
 
 export interface DiagnosisStore {
   loadStall(id: string): Promise<StallForDiagnosis>;
+  // Also clears any earlier block flag on the stall.
   saveDiagnosis(row: DiagnosisRow): Promise<void>;
+  // Marks the stall as blocked from diagnosis. Never changes its status: the
+  // stall stays undiagnosed and is never marked resolved. `reason` carries the
+  // kind of block and model ids or field paths only, never customer data.
+  flagBlocked(stallId: string, reason: string): Promise<void>;
 }
 
 export class StaleVerificationError extends Error {}
@@ -75,12 +80,32 @@ export function supabaseDiagnosisStore(): DiagnosisStore {
       }
       const { error: statusError } = await db
         .from("stalls")
-        .update({ status: "diagnosed" })
+        .update({ status: "diagnosed", diagnosis_blocked: null, diagnosis_blocked_at: null })
         .eq("id", row.stall_id)
         .in("status", ["new", "diagnosing"]);
       if (statusError) throw new Error(`diagnose status ${row.stall_id}: ${statusError.message}`);
     },
+
+    async flagBlocked(stallId, reason) {
+      const { error } = await supabaseAdmin()
+        .from("stalls")
+        .update({ diagnosis_blocked: reason.slice(0, MAX_BLOCK_REASON_CHARS), diagnosis_blocked_at: new Date().toISOString() })
+        .eq("id", stallId);
+      if (error) throw new Error(`diagnose flag ${stallId}: ${error.message}`);
+    },
   };
+}
+
+const MAX_BLOCK_REASON_CHARS = 500;
+
+// Why diagnosis was blocked, for the stall's flag. Model ids, categories,
+// leak kind and field path only.
+function blockReason(err: unknown): string | null {
+  if (err instanceof ModelRefusedError) {
+    return `model_refused: ${err.refusals.map((r) => `${r.model} (${r.category ?? "no category"})`).join("; ")}`;
+  }
+  if (err instanceof PiiLeakError) return `pii_gate: ${err.kind} at ${err.path}`;
+  return null;
 }
 
 // Checks a provider's raw output. Anything off-schema throws rather than being
@@ -148,14 +173,27 @@ export async function diagnoseStall(
         `stall ${stall.id}: gateway_response not recognised by rules and no DIAGNOSIS_MODEL_PROVIDER is set`,
       );
     }
-    const input = buildModelInput(row, gatewayResponse);
-    assertNoPii(input, knownIdentifiers(row));
-
     let classified;
     try {
+      const input = buildModelInput(row, gatewayResponse);
+      assertNoPii(input, knownIdentifiers(row));
       classified = await model.classify(input);
     } catch (err) {
       if (err instanceof ModelRefusedError) logRefusals(log, stall.id, err.refusals, null);
+      const reason = blockReason(err);
+      if (reason) {
+        // Flag the stall so the block is visible in the table, then rethrow:
+        // the caller still sees the original error and nothing is saved.
+        try {
+          await store.flagBlocked(stall.id, reason);
+          log(`[diagnose] stall ${stall.id}: diagnosis blocked (${reason}); flagged, left undiagnosed`);
+        } catch (flagErr) {
+          log(
+            `[diagnose] stall ${stall.id}: diagnosis blocked (${reason}); FAILED to flag the stall: ` +
+              (flagErr instanceof Error ? flagErr.message : "unknown error"),
+          );
+        }
+      }
       throw err;
     }
     const { output, model: modelId, refusals } = classified;

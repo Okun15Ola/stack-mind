@@ -59,7 +59,11 @@ function verified(row: StallForDiagnosis, paystackStatus: string, ageMs = 30_000
 
 function memoryStore(rows: StallForDiagnosis[]) {
   const saved: DiagnosisRow[] = [];
+  const flags: { stallId: string; reason: string }[] = [];
   const store: DiagnosisStore = {
+    async flagBlocked(stallId, reason) {
+      flags.push({ stallId, reason });
+    },
     async loadStall(id) {
       const row = rows.find((r) => r.id === id);
       if (!row) throw new Error("not found");
@@ -69,7 +73,7 @@ function memoryStore(rows: StallForDiagnosis[]) {
       saved.push(row);
     },
   };
-  return { store, saved };
+  return { store, saved, flags };
 }
 
 const modelMustNotBeCalled: DiagnosisModel = {
@@ -213,13 +217,47 @@ describe("model path", () => {
       },
     };
     const lines: string[] = [];
+    const row = { ...noSignal };
+    const { store, saved, flags } = memoryStore([row]);
+    await assert.rejects(diagnoseStall(verified(row, "abandoned"), { store, model, now: () => NOW, log: (l) => lines.push(l) }), ModelRefusedError);
+    assert.equal(saved.length, 0);
+    assert.match(lines[0], /claude-haiku-5-5 refused \(cyber\); no model answered, stall left undiagnosed/);
+    assert.match(lines[1], /claude-sonnet-5-5 refused \(cyber\); no model answered, stall left undiagnosed/);
+
+    // Left undiagnosed and visibly flagged: never skipped, never resolved.
+    assert.deepEqual(flags, [{ stallId: "stall-quiet", reason: "model_refused: claude-haiku-5-5 (cyber); claude-sonnet-5-5 (cyber)" }]);
+    assert.equal(row.status, "new");
+    assert.match(lines[2], /diagnosis blocked \(model_refused: .*\); flagged, left undiagnosed/);
+  });
+
+  it("a PII gate refusal flags the stall with kind and path only, and calls no model", async () => {
+    const leaky: StallForDiagnosis = { ...noSignal, id: "stall-leaky", gateway_response: "Adaeze cancelled" };
+    const { store, saved, flags } = memoryStore([leaky]);
+    const lines: string[] = [];
+    await assert.rejects(
+      diagnoseStall(verified(leaky, "abandoned"), { store, model: modelMustNotBeCalled, now: () => NOW, log: (l) => lines.push(l) }),
+      PiiLeakError,
+    );
+    assert.equal(saved.length, 0);
+    assert.deepEqual(flags, [{ stallId: "stall-leaky", reason: "pii_gate: identifier at input.gateway_response" }]);
+    assert.ok(!lines.join("").includes("Adaeze"));
+  });
+
+  it("if flagging fails, the original error still surfaces and the failure is logged", async () => {
+    const model: DiagnosisModel = { async classify() { throw new ModelRefusedError([{ model: "m", category: null }]); } };
     const { store, saved } = memoryStore([noSignal]);
+    store.flagBlocked = async () => { throw new Error("column diagnosis_blocked does not exist"); };
+    const lines: string[] = [];
     await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW, log: (l) => lines.push(l) }), ModelRefusedError);
     assert.equal(saved.length, 0);
-    assert.equal(lines.length, 2);
-    assert.ok(lines.every((l) => l.includes("no model answered, stall left undiagnosed")));
-    assert.match(lines[0], /claude-haiku-5-5 refused \(cyber\)/);
-    assert.match(lines[1], /claude-sonnet-5-5 refused \(cyber\)/);
+    assert.ok(lines.some((l) => l.includes("FAILED to flag the stall")));
+  });
+
+  it("other model errors are not flagged as blocked", async () => {
+    const model: DiagnosisModel = { async classify() { throw new Error("network down"); } };
+    const { store, flags } = memoryStore([noSignal]);
+    await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW, log: () => {} }), /network down/);
+    assert.deepEqual(flags, []);
   });
 
   it("refusal log lines carry no customer data", async () => {
@@ -310,6 +348,7 @@ describe("guards", () => {
 
   it("surfaces the database guard's refusal", async () => {
     const store: DiagnosisStore = {
+      flagBlocked: async () => {},
       loadStall: async () => realFailed,
       saveDiagnosis: async () => {
         throw new Error("stall x not re-verified with Paystack in the last 10 minutes; refusing");
