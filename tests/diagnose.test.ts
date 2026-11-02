@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { diagnoseStall, validateClassification, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
-import { getDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
+import { AnthropicDiagnosisModel, ModelRefusedError, getDiagnosisModel, type DiagnosisModel } from "@/lib/diagnosis-model";
 import { classifyGatewayResponse } from "@/lib/gateway-rules";
 import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText } from "@/lib/redact";
 import type { ModelInput } from "@/lib/redact";
@@ -59,7 +59,11 @@ function verified(row: StallForDiagnosis, paystackStatus: string, ageMs = 30_000
 
 function memoryStore(rows: StallForDiagnosis[]) {
   const saved: DiagnosisRow[] = [];
+  const flags: { stallId: string; reason: string }[] = [];
   const store: DiagnosisStore = {
+    async flagBlocked(stallId, reason) {
+      flags.push({ stallId, reason });
+    },
     async loadStall(id) {
       const row = rows.find((r) => r.id === id);
       if (!row) throw new Error("not found");
@@ -69,7 +73,7 @@ function memoryStore(rows: StallForDiagnosis[]) {
       saved.push(row);
     },
   };
-  return { store, saved };
+  return { store, saved, flags };
 }
 
 const modelMustNotBeCalled: DiagnosisModel = {
@@ -158,7 +162,7 @@ describe("model path", () => {
     const model: DiagnosisModel = {
       async classify(input) {
         seen = input;
-        return { output: { reason: "UNANSWERED_QUESTION", confidence: 0.41, rationale: "Long dwell, no attempt." }, model: "fake:model-1" };
+        return { output: { reason: "UNANSWERED_QUESTION", confidence: 0.41, rationale: "Long dwell, no attempt." }, model: "fake:model-1", refusals: [] };
       },
     };
     const { store, saved } = memoryStore([noSignal]);
@@ -177,6 +181,108 @@ describe("model path", () => {
     assert.ok(sent.includes("[email]"), "email inside free text is scrubbed, not dropped silently");
   });
 
+  it("the row names the model that answered after a Haiku refusal, not Haiku", async () => {
+    const replies = [
+      (p: Record<string, unknown>) => ({ model: p.model, stop_reason: "refusal", stop_details: { category: "general_harms" }, content: [] }),
+      (p: Record<string, unknown>) => ({
+        model: p.model,
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: JSON.stringify({ reason: "FORGOT", confidence: 0.35, rationale: "No attempt recorded." }) }],
+      }),
+    ];
+    let call = 0;
+    const client = { beta: { messages: { create: async (p: Record<string, unknown>) => replies[call++](p) } } };
+    const model = new AnthropicDiagnosisModel("claude-haiku-5-5", client as unknown as ConstructorParameters<typeof AnthropicDiagnosisModel>[1]);
+    const lines: string[] = [];
+    const { store, saved } = memoryStore([noSignal]);
+    const r = await diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW, log: (l) => lines.push(l) });
+
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].model, "anthropic:claude-sonnet-5-5");
+    assert.ok(!saved[0].model.includes("haiku"), "row names a model that did not answer");
+    assert.deepEqual(r.refusals, [{ model: "claude-haiku-5-5", category: "general_harms" }]);
+
+    // The refusal is visible in the log, naming the model that refused.
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /stall stall-quiet: claude-haiku-5-5 refused \(general_harms\); answered by anthropic:claude-sonnet-5-5/);
+  });
+
+  it("when every model refuses, the refusals are logged and nothing is saved", async () => {
+    const model: DiagnosisModel = {
+      async classify() {
+        throw new ModelRefusedError([
+          { model: "claude-haiku-5-5", category: "cyber" },
+          { model: "claude-sonnet-5-5", category: "cyber" },
+        ]);
+      },
+    };
+    const lines: string[] = [];
+    const row = { ...noSignal };
+    const { store, saved, flags } = memoryStore([row]);
+    await assert.rejects(diagnoseStall(verified(row, "abandoned"), { store, model, now: () => NOW, log: (l) => lines.push(l) }), ModelRefusedError);
+    assert.equal(saved.length, 0);
+    assert.match(lines[0], /claude-haiku-5-5 refused \(cyber\); no model answered, stall left undiagnosed/);
+    assert.match(lines[1], /claude-sonnet-5-5 refused \(cyber\); no model answered, stall left undiagnosed/);
+
+    // Left undiagnosed and visibly flagged: never skipped, never resolved.
+    assert.deepEqual(flags, [{ stallId: "stall-quiet", reason: "model_refused: claude-haiku-5-5 (cyber); claude-sonnet-5-5 (cyber)" }]);
+    assert.equal(row.status, "new");
+    assert.match(lines[2], /diagnosis blocked \(model_refused: .*\); flagged, left undiagnosed/);
+  });
+
+  it("a PII gate refusal flags the stall with kind and path only, and calls no model", async () => {
+    const leaky: StallForDiagnosis = { ...noSignal, id: "stall-leaky", gateway_response: "Adaeze cancelled" };
+    const { store, saved, flags } = memoryStore([leaky]);
+    const lines: string[] = [];
+    await assert.rejects(
+      diagnoseStall(verified(leaky, "abandoned"), { store, model: modelMustNotBeCalled, now: () => NOW, log: (l) => lines.push(l) }),
+      PiiLeakError,
+    );
+    assert.equal(saved.length, 0);
+    assert.deepEqual(flags, [{ stallId: "stall-leaky", reason: "pii_gate: identifier at input.gateway_response" }]);
+    assert.ok(!lines.join("").includes("Adaeze"));
+  });
+
+  it("if flagging fails, the original error still surfaces and the failure is logged", async () => {
+    const model: DiagnosisModel = { async classify() { throw new ModelRefusedError([{ model: "m", category: null }]); } };
+    const { store, saved } = memoryStore([noSignal]);
+    store.flagBlocked = async () => { throw new Error("column diagnosis_blocked does not exist"); };
+    const lines: string[] = [];
+    await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW, log: (l) => lines.push(l) }), ModelRefusedError);
+    assert.equal(saved.length, 0);
+    assert.ok(lines.some((l) => l.includes("FAILED to flag the stall")));
+  });
+
+  it("other model errors are not flagged as blocked", async () => {
+    const model: DiagnosisModel = { async classify() { throw new Error("network down"); } };
+    const { store, flags } = memoryStore([noSignal]);
+    await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW, log: () => {} }), /network down/);
+    assert.deepEqual(flags, []);
+  });
+
+  it("refusal log lines carry no customer data", async () => {
+    const model: DiagnosisModel = {
+      async classify() {
+        return { output: { reason: "FORGOT", confidence: 0.3, rationale: "x" }, model: "fake:b", refusals: [{ model: "fake:a", category: null }] };
+      },
+    };
+    const lines: string[] = [];
+    const { store } = memoryStore([noSignal]);
+    await diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW, log: (l) => lines.push(l) });
+    const logged = lines.join("\n");
+    for (const leak of ["example.com", "Adaeze", "Okonkwo", "08012345678", "102.89", "CUS_", "AUTH_", "4081"]) {
+      assert.ok(!logged.includes(leak), `log leaked ${leak}`);
+    }
+    assert.match(logged, /fake:a refused \(no category\); answered by fake:b/);
+  });
+
+  it("refuses a provider result that does not name the answering model", async () => {
+    const model = { async classify() { return { output: { reason: "FORGOT", confidence: 0.3, rationale: "x" }, model: "", refusals: [] }; } };
+    const { store, saved } = memoryStore([noSignal]);
+    await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW }), /did not name the model/);
+    assert.equal(saved.length, 0);
+  });
+
   it("throws instead of guessing when no model is configured", async () => {
     const { store, saved } = memoryStore([noSignal]);
     await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model: null, now: () => NOW }), /no DIAGNOSIS_MODEL_PROVIDER/);
@@ -184,7 +290,7 @@ describe("model path", () => {
   });
 
   it("rejects malformed model output without saving", async () => {
-    const model: DiagnosisModel = { async classify() { return { output: { reason: "MAYBE", confidence: 2, rationale: "" }, model: "fake" }; } };
+    const model: DiagnosisModel = { async classify() { return { output: { reason: "MAYBE", confidence: 2, rationale: "" }, model: "fake", refusals: [] }; } };
     const { store, saved } = memoryStore([noSignal]);
     await assert.rejects(diagnoseStall(verified(noSignal, "abandoned"), { store, model, now: () => NOW }));
     assert.equal(saved.length, 0);
@@ -242,6 +348,7 @@ describe("guards", () => {
 
   it("surfaces the database guard's refusal", async () => {
     const store: DiagnosisStore = {
+      flagBlocked: async () => {},
       loadStall: async () => realFailed,
       saveDiagnosis: async () => {
         throw new Error("stall x not re-verified with Paystack in the last 10 minutes; refusing");
@@ -287,5 +394,36 @@ describe("rules-only path", () => {
     );
     assert.equal(r.source, "rules");
     assert.equal(saved[0].reason, "CARD_FAILING");
+    assert.deepEqual(r.refusals, []);
+  });
+
+  it("with no provider set and DIAGNOSIS_MODEL set, the model is still never called", async () => {
+    const before = process.env.DIAGNOSIS_MODEL;
+    process.env.DIAGNOSIS_MODEL = "claude-opus-5-5";
+    const original = console.warn;
+    console.warn = () => {};
+    try {
+      const { store, saved } = memoryStore([realAbandoned]);
+      const r = await withProvider(undefined, () => diagnoseStall(verified(realAbandoned, "abandoned"), { store, now: () => NOW }));
+      assert.equal(r.source, "rules");
+      assert.equal(saved[0].model, "rules:gateway-response@1");
+      const quiet = memoryStore([noSignalForRules]);
+      await assert.rejects(
+        withProvider("none", () => diagnoseStall(verified(noSignalForRules, "abandoned"), { store: quiet.store, now: () => NOW })),
+        /no DIAGNOSIS_MODEL_PROVIDER/,
+      );
+      assert.equal(quiet.saved.length, 0);
+    } finally {
+      console.warn = original;
+      if (before === undefined) delete process.env.DIAGNOSIS_MODEL;
+      else process.env.DIAGNOSIS_MODEL = before;
+    }
   });
 });
+
+const noSignalForRules: StallForDiagnosis = {
+  ...realAbandoned,
+  id: "stall-rules-quiet",
+  gateway_response: "The transaction was not completed",
+  payload: { reference: "rq", status: "abandoned", gateway_response: "The transaction was not completed" },
+};

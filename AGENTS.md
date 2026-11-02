@@ -25,6 +25,18 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Don't build on `error_code`.** Paystack puts no code on the transaction, so the column stays empty.
 - **Known gateway strings are classified by rules** in `src/lib/gateway-rules.ts`, with no model call. Add a rule only for unambiguous text, and add a test case with it.
 - **Model calls go through `DiagnosisModel`** in `src/lib/diagnosis-model.ts`. Swap providers there; the classifier doesn't change.
+- **Two env vars choose the model, read in this order:**
+
+  | `DIAGNOSIS_MODEL_PROVIDER` | `DIAGNOSIS_MODEL` | Result |
+  | --- | --- | --- |
+  | unset, empty or `none` | anything, or unset | **Rules only.** No model is called and no API key is read. A stall the rules can't classify stays undiagnosed. If `DIAGNOSIS_MODEL` is set, it is ignored and a warning is logged. |
+  | `anthropic` | unset | `claude-haiku-5-5` at low effort, the default. |
+  | `anthropic` | a `claude-…` id | That model (e.g. `claude-opus-5-5` for the frontier model). Anything that isn't a `claude-…` id throws. |
+  | anything else | anything | Throws. |
+
+  `DIAGNOSIS_MODEL_PROVIDER` decides *whether* a model is used; `DIAGNOSIS_MODEL` only picks *which* Anthropic model once it is.
+- **Refusals fall back, and are never silent.** Haiku has no server-side fallback, so a Haiku refusal is retried once on `claude-sonnet-5-5`; the other models use Anthropic's server-side fallback. Every refusal is logged with the stall id, the model that refused and its category, and returned on the diagnosis result.
+- **`diagnoses.model` names the model that actually produced the answer**, read from the API response, never the model that was requested. After a fallback it is the fallback model. If a response doesn't say which model answered, diagnosis throws rather than guess.
 - **Nothing from `stalls.payload` reaches a prompt unredacted.** `buildModelInput()` copies an allowlist of fields, and `assertNoPii()` must pass before any model call. Never spread or serialise the payload into a prompt.
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
 
