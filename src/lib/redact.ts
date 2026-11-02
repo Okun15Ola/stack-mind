@@ -8,7 +8,7 @@
 //      new object. The payload is never spread or serialised wholesale.
 //   2. Gate: assertNoPii() walks every key and value of that object and
 //      throws on email, phone (Nigerian formats included), card PAN, IP,
-//      Paystack codes, any other long number, and the stall's own known
+//      Paystack codes, any other 10+ digit number, and the stall's own known
 //      identifiers (email, phone, names, codes, reference, ids). It also
 //      throws on anything it cannot inspect. Any throw means the model is not
 //      called.
@@ -34,8 +34,11 @@ const NG_PHONE = new RegExp(
 );
 // Card PANs: 13 to 19 digits with optional separators (checked with Luhn).
 const CARD_CANDIDATE = new RegExp(`(?<!\\d)\\d(?:${SEP}?\\d){12,18}(?!\\d)`, "g");
-// Phone, card and account numbers: 8+ digits, allowing separators.
-const LONG_NUMBER = new RegExp(`\\+?\\d(?:${SEP}*\\d){7,}`, "g");
+// Any other run of 10+ digits, allowing separators: NUBAN account numbers
+// (10 digits), foreign phones, card-like numbers that fail Luhn. Shorter runs
+// are left alone so kobo amounts up to 9 digits survive; Nigerian phones of
+// any length are caught by NG_PHONE above.
+const LONG_NUMBER = new RegExp(`\\+?\\d(?:${SEP}*\\d){9,}`, "g");
 const PAYSTACK_CODE = /(?<![a-z0-9])(?:CUS|AUTH|PLN|SUB|ACCT|TRF|RCP|SPL)_[a-z0-9]+/gi;
 
 // Folds look-alike characters (full-width digits, full-width @) to ASCII and

@@ -219,7 +219,7 @@ describe("PII gate", () => {
 
   it("scrubText redacts each kind", () => {
     assert.equal(
-      scrubText("a@b.co 10.0.0.1 CUS_x1 +2348012345678 4084 0840 8408 4081 12345678"),
+      scrubText("a@b.co 10.0.0.1 CUS_x1 +2348012345678 4084 0840 8408 4081 0123456789"),
       "[email] [ip] [code] [phone] [card] [number]",
     );
   });
