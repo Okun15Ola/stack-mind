@@ -26,7 +26,7 @@ export function evidenceGaps(input: ModelInput): EvidenceGap[] {
 
 // What the merchant is shown, for an INSUFFICIENT_EVIDENCE diagnosis.
 const NEEDED: Record<EvidenceGap, string> = {
-  behaviour_trail: "What the buyer did on your site before paying (the behaviour trail isn't connected yet).",
+  behaviour_trail: "What the buyer did on your site before paying (no behaviour trail was received for this payment).",
   checkout_log: "The buyer's steps inside the Paystack checkout (Paystack returned no checkout log for this payment).",
   card_details: "The card or account the buyer tried to pay with (Paystack returned no card details for this payment).",
 };

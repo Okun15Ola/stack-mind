@@ -39,6 +39,7 @@ const verified = (row: StallForDiagnosis) =>
 function memoryStore(rows: StallForDiagnosis[]) {
   const saved: DiagnosisRow[] = [];
   const store: DiagnosisStore = {
+    loadBehaviourEvents: async () => [],
     loadStall: async (id) => rows.find((r) => r.id === id)!,
     saveDiagnosis: async (row) => void saved.push(row),
     flagBlocked: async () => {},
@@ -78,7 +79,7 @@ describe("INSUFFICIENT_EVIDENCE", () => {
 
     const shown = describeEvidenceNeeded(saved[0].evidence_gaps);
     assert.equal(shown.summary, "Could not determine why this payment stalled.");
-    assert.ok(shown.needed.some((n) => n.includes("behaviour trail isn't connected")));
+    assert.ok(shown.needed.some((n) => n.includes("no behaviour trail was received")));
     assert.ok(shown.needed.some((n) => n.includes("no checkout log")));
   });
 

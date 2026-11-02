@@ -11,7 +11,8 @@
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
     "test:pii": "node --import tsx --test tests/redact.test.ts",
     "diagnose": "node --env-file=.env.local --import tsx scripts/diagnose-stall.ts",
-    "compare-models": "node --env-file=.env.local --import tsx scripts/compare-models.ts"
+    "compare-models": "node --env-file=.env.local --import tsx scripts/compare-models.ts",
+    "emitter-key": "node --import tsx scripts/generate-emitter-key.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

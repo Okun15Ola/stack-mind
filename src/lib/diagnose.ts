@@ -1,8 +1,9 @@
 import { ModelRefusedError, ModelUnparseableError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
+import { JOIN_TAIL_MS, selectTrailEvents, trailRefsFromTransaction, type StoredEvent, type TrailRefs, type TrailSelection } from "@/lib/behaviour/trail";
 import { evidenceGaps, type EvidenceGap } from "@/lib/evidence";
 import { isOutcome, type Classification } from "@/lib/reasons";
-import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, type StallForModel } from "@/lib/redact";
+import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, transactionFromPayload, type StallForModel } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -38,6 +39,8 @@ export type StallForDiagnosis = StallForModel & {
   id: string;
   status: string;
   customer_identifier: string | null;
+  // When the transaction was created. Needed to join the behaviour trail.
+  stalled_at?: string | null;
 };
 
 export type DiagnosisRow = {
@@ -56,6 +59,9 @@ export interface DiagnosisStore {
   loadStall(id: string): Promise<StallForDiagnosis>;
   // Also clears any earlier block flag on the stall.
   saveDiagnosis(row: DiagnosisRow): Promise<void>;
+  // Stored behaviour events for these refs, at or before `until`. The join
+  // itself (selectTrailEvents) is pure and runs on what this returns.
+  loadBehaviourEvents(refs: TrailRefs, until: Date): Promise<StoredEvent[]>;
   // Marks the stall as blocked from diagnosis. Never changes its status: the
   // stall stays undiagnosed and is never marked resolved. `reason` carries the
   // kind of block and model ids or field paths only, never customer data.
@@ -69,7 +75,7 @@ export function supabaseDiagnosisStore(): DiagnosisStore {
     async loadStall(id) {
       const { data, error } = await supabaseAdmin()
         .from("stalls")
-        .select("id, status, gateway_response, amount, currency, event_type, customer_identifier, payload")
+        .select("id, status, gateway_response, amount, currency, event_type, customer_identifier, stalled_at, payload")
         .eq("id", id)
         .single<StallForDiagnosis>();
       if (error) throw new Error(`diagnose load ${id}: ${error.message}`);
@@ -93,6 +99,28 @@ export function supabaseDiagnosisStore(): DiagnosisStore {
       if (statusError) throw new Error(`diagnose status ${row.stall_id}: ${statusError.message}`);
     },
 
+    async loadBehaviourEvents(refs, until) {
+      const db = supabaseAdmin();
+      const results: StoredEvent[] = [];
+      for (const [column, value] of [
+        ["session_ref", refs.sessionRef],
+        ["buyer_ref", refs.buyerRef],
+      ] as const) {
+        if (!value) continue;
+        const { data, error } = await db
+          .from("behaviour_events")
+          .select("event_id, type, occurred_at, buyer_ref, session_ref, device, properties, source")
+          .eq(column, value)
+          .lte("occurred_at", until.toISOString())
+          .order("occurred_at", { ascending: true })
+          .limit(500);
+        if (error) throw new Error(`behaviour events load: ${error.message}`);
+        results.push(...((data ?? []) as StoredEvent[]));
+      }
+      const seen = new Set<string>();
+      return results.filter((e) => (seen.has(e.event_id) ? false : (seen.add(e.event_id), true)));
+    },
+
     async flagBlocked(stallId, reason) {
       const { error } = await supabaseAdmin()
         .from("stalls")
@@ -114,6 +142,18 @@ function blockReason(err: unknown): string | null {
   if (err instanceof ModelUnparseableError) return `model_unparseable: ${err.model} (${err.attempts} attempts)`;
   if (err instanceof PiiLeakError) return `pii_gate: ${err.kind} at ${err.path}`;
   return null;
+}
+
+// The behaviour trail for a stall: refs from the transaction's metadata, then
+// the join rules in selectTrailEvents. A stall created before the trail, or
+// with no recorded creation time, has no trail.
+async function loadTrail(store: DiagnosisStore, row: StallForDiagnosis): Promise<TrailSelection> {
+  const refs = trailRefsFromTransaction(transactionFromPayload(row.payload));
+  if (!refs.buyerRef && !refs.sessionRef) return { kind: "no_ref" };
+  const createdAt = row.stalled_at ? new Date(row.stalled_at) : null;
+  if (!createdAt || Number.isNaN(createdAt.getTime())) return { kind: "no_events" };
+  const candidates = await store.loadBehaviourEvents(refs, new Date(createdAt.getTime() + JOIN_TAIL_MS));
+  return selectTrailEvents(refs, createdAt, candidates);
 }
 
 // Checks a provider's raw output. Anything off-schema throws rather than being
@@ -181,10 +221,11 @@ export async function diagnoseStall(
         `stall ${stall.id}: gateway_response not recognised by rules and no DIAGNOSIS_MODEL_PROVIDER is set`,
       );
     }
+    const trail = await loadTrail(store, row);
     let classified;
     let gaps: EvidenceGap[] = [];
     try {
-      const input = buildModelInput(row, gatewayResponse);
+      const input = buildModelInput(row, gatewayResponse, trail);
       gaps = evidenceGaps(input);
       assertNoPii(input, knownIdentifiers(row));
       classified = await model.classify(input);

@@ -17,6 +17,8 @@
 // No PII value is ever put into an error message: PiiLeakError carries only
 // the kind of leak and the field path, so it is safe to log.
 
+import { CLIENT_EVENTS_NOTE, trailFacts, type TrailFact, type TrailSelection } from "@/lib/behaviour/trail";
+
 // Separators people put between digits: spaces (incl. NBSP), dots, dashes of
 // every width, slashes, underscores, brackets.
 const SEP = "[\\s.()\\-\u2010-\u2015\u2212/_]";
@@ -116,7 +118,9 @@ export function section<T extends object>(fields: T | null | undefined, why: str
 
 export const UNAVAILABLE = {
   behaviourTrail:
-    "Opada's buyer behaviour trail is not connected for this merchant, so nothing is known about what the buyer did on the merchant's site. This is a gap in our data, not evidence about the buyer either way.",
+    "No behaviour trail is joined to this transaction: it carries no Opada buyer reference (it was created before the trail existed, or the merchant's checkout didn't attach one), so nothing is known about what the buyer did on the merchant's site. This is a gap in our data, not evidence about the buyer either way.",
+  behaviourTrailNoEvents:
+    "This transaction carries an Opada buyer reference, but no behaviour events were received for this checkout, so nothing is known about what the buyer did on the merchant's site. This is a gap in our data, not evidence about the buyer either way.",
   checkout:
     "Paystack returned no checkout log for this transaction. This is a gap in our data, not evidence that the buyer did or did not attempt payment.",
   card: "Paystack returned no card details for this transaction. This is a gap in our data, not evidence about the buyer either way.",
@@ -141,10 +145,11 @@ export type ModelInput = {
     mobile: boolean | null;
     steps: { type: string | null; message: string | null; at_second: number | null }[];
   }>;
-  // Opada's own record of what the buyer did on the merchant's site. Not
-  // built yet, so it is unavailable for every merchant. Its fields arrive
-  // with the behaviour-trail chunk.
-  behaviour_trail: Section<{ events: never[] }>;
+  // Opada's own record of what the buyer did on the merchant's site, joined
+  // on the buyer ref the merchant attached to the transaction (issue #12).
+  // Each event carries its source; `note` explains client-sourced events
+  // when any are present.
+  behaviour_trail: Section<{ events: TrailFact[]; note: string | null }>;
 };
 
 // The keys of ModelInput that are sections. Adding a section to ModelInput
@@ -163,7 +168,11 @@ export type StallForModel = {
 // Paystack status, abandoned_by, source and event_type are excluded on purpose:
 // classification must rest on gateway_response, and event_type carries the
 // status for polled rows ("transaction.abandoned").
-export function buildModelInput(stall: StallForModel, gatewayResponse: string | null): ModelInput {
+export function buildModelInput(
+  stall: StallForModel,
+  gatewayResponse: string | null,
+  trail: TrailSelection = { kind: "no_ref" },
+): ModelInput {
   const tx = transactionFromPayload(stall.payload);
   const auth = obj(tx.authorization);
   const log = obj(tx.log);
@@ -194,7 +203,7 @@ export function buildModelInput(stall: StallForModel, gatewayResponse: string | 
     is_subscription_renewal: stall.event_type === "invoice.payment_failed",
     card: section(card, UNAVAILABLE.card),
     checkout: section(checkout, UNAVAILABLE.checkout),
-    behaviour_trail: section<{ events: never[] }>(null, UNAVAILABLE.behaviourTrail),
+    behaviour_trail: behaviourTrailSection(trail),
   };
 }
 
@@ -355,4 +364,11 @@ export function assertNoPii(input: unknown, known: string[]): void {
   };
 
   walk(input, "input");
+}
+
+function behaviourTrailSection(trail: TrailSelection): ModelInput["behaviour_trail"] {
+  if (trail.kind === "no_ref") return section<{ events: TrailFact[]; note: string | null }>(null, UNAVAILABLE.behaviourTrail);
+  const events = trail.kind === "events" ? trailFacts(trail.events) : [];
+  const note = events.some((e) => e.source === "client") ? CLIENT_EVENTS_NOTE : null;
+  return section({ events, note }, UNAVAILABLE.behaviourTrailNoEvents);
 }

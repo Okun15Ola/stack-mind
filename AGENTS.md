@@ -88,6 +88,20 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   - **An unset `OPADA_DRY_RUN` counts as off.** Only the exact value `true` counts as on. That's deliberate; keep it.
   - **The live key and both flags go in `.env.local` only, never in Vercel.** The only exception would be a deliberate decision that the deployed poller should read live. That is a separate decision, and **it has not been made.**
 
+## Behaviour trail (issue #12)
+
+- **The emitting apps send events; Opada only receives.** Opada never reads ShopCart's or PassMate's databases and pulls in none of their code. The contract is issue #12, and the emitter-side guide is `docs/behaviour-trail-integration.md`.
+- **Opada must never hold a credential that can forge events.** Emitters sign with their own Ed25519 private key; `emitter_keys` stores only public keys (two per emitter, for rotation). Don't switch this to HMAC or any shared secret.
+  - The signature covers `"<timestamp>.<raw body>"`, the raw bytes, and is verified before parsing.
+  - **The ±300-second timestamp window is enforced.**
+  - `event_id` is deduplicated per merchant.
+  - Keys are generated with `npm run emitter-key` on the emitter's side. The private key is never sent to Opada.
+- **Event `source` is set by Opada from the credential, never from the body.** It reaches the model input on every event. Client-sourced events are weak evidence and, per the Mandate requirements, never enough alone to trigger an action.
+- **No free text anywhere in an event.** Unknown fields, properties and enum values are rejected, and errors never echo values.
+- **The trail is forward-only.** A transaction joins only if `opada_buyer_ref` was in its Paystack metadata at creation. The join is on `session_ref`, else on `buyer_ref` from the buyer's last `checkout_started`.
+- **Retention is 30 days.** `purge_behaviour_events()` runs with every cron poll.
+- **What a forged event buys an attacker:** a polluted trail, so a wrong diagnosis and possibly a wrong message to a real buyer. Not money.
+
 ## Payment providers: direction, not yet built
 
 Opada will integrate with three of Okunola's products:
@@ -95,7 +109,7 @@ Opada will integrate with three of Okunola's products:
 - **PassMate and ShopCart**, both on the **same** Paystack account. One Paystack connection covers both.
 - **finalyear.ng**, which runs on **Bachs**, not Paystack.
 
-None of this is implemented. Don't pull in ShopCart, PassMate or finalyear.ng code, schema or types until the architecture is decided.
+None of this is implemented, apart from the behaviour-trail ingest above. Don't pull in ShopCart, PassMate or finalyear.ng code, schema or types.
 
 The decision so far:
 

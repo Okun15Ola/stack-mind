@@ -73,6 +73,8 @@ gateway_response is the primary signal. If it describes a decline, the reason is
 
 Some sections are marked "available": false, with a "why". Those are gaps in what we could collect, not facts about the buyer. Never treat missing or unavailable data as evidence: no checkout log does not mean the buyer never attempted payment, and no behaviour trail does not mean the buyer did nothing.
 
+behaviour_trail, when available, lists what the buyer did on the merchant's site during this checkout, in order, with seconds from the first event. Each event has a "source". "server" events were sent by the merchant's own server. "client" events came from a browser and can be forged by anyone: treat them as weak evidence that can support a reason but never establish one on their own. info_viewed (with its kind) and question_asked bear on UNANSWERED_QUESTION; payment_started and payment_closed (with its stage) bear on NO_TRUST; a checkout_left with no payment_started bears on FORGOT.
+
 If the facts you have cannot separate the candidate reasons, return INSUFFICIENT_EVIDENCE instead of guessing. Do not pick a reason you cannot support. Never return INSUFFICIENT_EVIDENCE when gateway_response describes a decline, a funds problem or an outage: those are classified from gateway_response alone. Do not list what evidence is missing; that is worked out separately.
 
 confidence is your probability that the reason is right; for INSUFFICIENT_EVIDENCE, your probability that the facts really cannot separate the reasons. Go below 0.5 when the evidence is thin, which it often is for the last three reasons. The rationale cites the facts you used and never speculates about who the customer is.`;
