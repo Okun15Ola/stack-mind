@@ -1,3 +1,4 @@
+import { INSUFFICIENT_EVIDENCE, type Outcome, type Reason } from "@/lib/reasons";
 import type { ModelInput } from "@/lib/redact";
 
 // The evidence a diagnosis lacked, derived by code from the sections the
@@ -28,4 +29,19 @@ export function describeEvidenceNeeded(gaps: readonly EvidenceGap[]): { summary:
     summary: "Could not determine why this payment stalled.",
     needed: gaps.length ? gaps.map((g) => NEEDED[g]) : ["More detail about this payment than is currently available."],
   };
+}
+
+// What a merchant is shown for one diagnosis.
+//
+// On INSUFFICIENT_EVIDENCE there is deliberately no confidence figure. There,
+// confidence means "how sure the model is that the evidence is insufficient",
+// not confidence in a reason; "could not determine, 85% confident" means
+// nothing to a seller and reads as the opposite of what it is.
+export type MerchantView =
+  | { kind: "undetermined"; summary: string; needed: string[] }
+  | { kind: "diagnosed"; reason: Reason; confidence: number };
+
+export function merchantView(d: { reason: Outcome; confidence: number; evidenceGaps: readonly EvidenceGap[] }): MerchantView {
+  if (d.reason === INSUFFICIENT_EVIDENCE) return { kind: "undetermined", ...describeEvidenceNeeded(d.evidenceGaps) };
+  return { kind: "diagnosed", reason: d.reason, confidence: d.confidence };
 }

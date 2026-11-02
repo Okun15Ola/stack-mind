@@ -148,36 +148,44 @@ export function buildModelInput(stall: StallForModel, gatewayResponse: string | 
   const log = obj(tx.log);
   const history = Array.isArray(log?.history) ? log.history : [];
 
+  const card = auth
+    ? { type: str(auth.card_type), brand: str(auth.brand), bank: str(auth.bank), country_code: str(auth.country_code) }
+    : null;
+  const steps = history.slice(0, MAX_HISTORY_STEPS).map((h) => {
+    const step = obj(h) ?? {};
+    return { type: str(step.type), message: str(step.message), at_second: num(step.time) };
+  });
+  const checkout = log
+    ? {
+        time_spent_seconds: num(log.time_spent),
+        attempts: num(log.attempts),
+        errors: num(log.errors),
+        mobile: bool(log.mobile),
+        steps,
+      }
+    : null;
+
   return {
     gateway_response: str(gatewayResponse ?? stall.gateway_response),
     amount_minor_units: num(stall.amount) ?? num(tx.amount),
     currency: str(stall.currency) ?? str(tx.currency),
     payment_channel: str(tx.channel),
     is_subscription_renewal: stall.event_type === "invoice.payment_failed",
-    card: auth
-      ? {
-          available: true,
-          type: str(auth.card_type),
-          brand: str(auth.brand),
-          bank: str(auth.bank),
-          country_code: str(auth.country_code),
-        }
-      : { available: false, why: UNAVAILABLE.card },
-    checkout: log
-      ? {
-          available: true,
-          time_spent_seconds: num(log.time_spent),
-          attempts: num(log.attempts),
-          errors: num(log.errors),
-          mobile: bool(log.mobile),
-          steps: history.slice(0, MAX_HISTORY_STEPS).map((h) => {
-            const step = obj(h) ?? {};
-            return { type: str(step.type), message: str(step.message), at_second: num(step.time) };
-          }),
-        }
-      : { available: false, why: UNAVAILABLE.checkout },
+    // A section is available only if Paystack actually filled something in.
+    // Paystack sends `authorization: {}` on transactions where no card was
+    // used; reporting that as available-with-nulls would hand the model a
+    // row of nulls to read as evidence.
+    card: card && hasAnyValue(card) ? { available: true, ...card } : { available: false, why: UNAVAILABLE.card },
+    checkout:
+      checkout && (hasAnyValue({ ...checkout, steps: null }) || steps.length > 0)
+        ? { available: true, ...checkout }
+        : { available: false, why: UNAVAILABLE.checkout },
     behaviour_trail: { available: false, why: UNAVAILABLE.behaviourTrail },
   };
+}
+
+function hasAnyValue(section: Record<string, unknown>): boolean {
+  return Object.values(section).some((v) => v !== null && v !== undefined);
 }
 
 // Identifiers the stall is known to carry. Used by the gate to catch leaks

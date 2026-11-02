@@ -7,8 +7,7 @@
 // Reads .env.local; test-mode Paystack key only.
 
 import { diagnoseStall } from "@/lib/diagnose";
-import { describeEvidenceNeeded } from "@/lib/evidence";
-import { INSUFFICIENT_EVIDENCE } from "@/lib/reasons";
+import { merchantView } from "@/lib/evidence";
 import { reverifyStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -37,7 +36,7 @@ async function main(): Promise<number> {
   }
 
   const result = await diagnoseStall(check.stall);
-  const shownToMerchant = result.reason === INSUFFICIENT_EVIDENCE ? describeEvidenceNeeded(result.evidenceGaps) : undefined;
+  const shownToMerchant = merchantView(result);
   console.log(JSON.stringify({ reference, paystackStatus: check.stall.paystackStatus, ...result, shownToMerchant }, null, 2));
   return 0;
 }
