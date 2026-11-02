@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import { diagnoseStall, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
 import { DEFAULT_GROQ_MODEL, GroqDiagnosisModel, ModelRefusedError, ModelUnparseableError, OUTPUT_SCHEMA, getDiagnosisModel } from "@/lib/diagnosis-model";
-import { PiiLeakError, type ModelInput } from "@/lib/redact";
+import { PiiLeakError, UNAVAILABLE, type ModelInput } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
 
 const input: ModelInput = {
@@ -11,8 +11,9 @@ const input: ModelInput = {
   currency: "NGN",
   payment_channel: "card",
   is_subscription_renewal: false,
-  card: null,
-  checkout: null,
+  card: { available: false, why: UNAVAILABLE.card },
+  checkout: { available: false, why: UNAVAILABLE.checkout },
+  behaviour_trail: { available: false, why: UNAVAILABLE.behaviourTrail },
 };
 
 type Call = Record<string, unknown>;

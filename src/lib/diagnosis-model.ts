@@ -69,7 +69,9 @@ Choose exactly one reason:
 - UNANSWERED_QUESTION: signs the customer paused to find information (price, delivery, terms) and left without attempting payment, such as a long dwell with no attempt.
 - FORGOT: the checkout was opened but never really attempted, and nothing points to a decline, an outage or hesitation.
 
-gateway_response is the primary signal. If it describes a decline, the reason is CARD_FAILING even when there is no checkout activity. Use checkout activity only to separate NO_TRUST, UNANSWERED_QUESTION and FORGOT when gateway_response shows no decline, funds problem or outage.
+gateway_response is the primary signal. If it describes a decline, the reason is CARD_FAILING even when there is no checkout activity. Use checkout activity, when it is available, only to separate NO_TRUST, UNANSWERED_QUESTION and FORGOT when gateway_response shows no decline, funds problem or outage.
+
+Some sections are marked "available": false, with a "why". Those are gaps in what we could collect, not facts about the buyer. Never treat missing or unavailable data as evidence: no checkout log does not mean the buyer never attempted payment, and no behaviour trail does not mean the buyer did nothing. If gateway_response shows no decline, funds problem or outage and the sections that could separate the remaining reasons are unavailable, say in the rationale that the evidence cannot tell them apart, and set confidence to match.
 
 confidence is your probability that the reason is right. Go below 0.5 when the evidence is thin, which it often is for the last three reasons. The rationale cites the facts you used and never speculates about who the customer is.`;
 

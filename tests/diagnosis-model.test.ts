@@ -7,7 +7,7 @@ import {
   REFUSAL_FALLBACK_MODEL,
   getDiagnosisModel,
 } from "@/lib/diagnosis-model";
-import type { ModelInput } from "@/lib/redact";
+import { UNAVAILABLE, type ModelInput } from "@/lib/redact";
 
 const input: ModelInput = {
   gateway_response: "The transaction was not completed",
@@ -15,8 +15,9 @@ const input: ModelInput = {
   currency: "NGN",
   payment_channel: "card",
   is_subscription_renewal: false,
-  card: null,
-  checkout: null,
+  card: { available: false, why: UNAVAILABLE.card },
+  checkout: { available: false, why: UNAVAILABLE.checkout },
+  behaviour_trail: { available: false, why: UNAVAILABLE.behaviourTrail },
 };
 
 type Call = Record<string, unknown>;
