@@ -16,7 +16,7 @@
 // compared on all of them. Model input is the same allowlisted, PII-gated view
 // that diagnosis uses. Output is a Markdown table: reason, confidence, the
 // model that actually answered, refusals, and the (scrubbed) rationale.
-// Needs SUPABASE_*, a test-mode PAYSTACK_SECRET_KEY, and GROQ_API_KEY and/or
+// Needs SUPABASE_*, a Paystack key (see paystackKeyFor), and GROQ_API_KEY and/or
 // ANTHROPIC_API_KEY for the models being compared.
 
 import { validateClassification, type StallForDiagnosis } from "@/lib/diagnose";
@@ -25,6 +25,7 @@ import { evidenceGaps } from "@/lib/evidence";
 import { classifyGatewayResponse } from "@/lib/gateway-rules";
 import { INSUFFICIENT_EVIDENCE } from "@/lib/reasons";
 import { assertNoPii, buildModelInput, knownIdentifiers } from "@/lib/redact";
+import { paystackKeyFor } from "@/lib/paystack";
 import { reverifyStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
@@ -47,7 +48,7 @@ function candidate(spec: string): Candidate {
 
 const cell = (s: string) => s.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
 
-async function compare(reference: string, candidates: Candidate[]): Promise<string[]> {
+async function compare(reference: string, candidates: Candidate[], secretKey: string): Promise<string[]> {
   const { data: row, error } = await supabaseAdmin()
     .from("stalls")
     .select("id, status, gateway_response, amount, currency, event_type, customer_identifier, payload")
@@ -56,7 +57,7 @@ async function compare(reference: string, candidates: Candidate[]): Promise<stri
   if (error) throw new Error(`load ${reference}: ${error.message}`);
   if (!row) return [`| ${reference} | not found | | | | | | |`];
 
-  const check = await reverifyStall(row.id);
+  const check = await reverifyStall(row.id, secretKey);
   if (check.outcome === "resolved") return [`| ${reference} | resolved (customer paid), not diagnosed | | | | | | |`];
 
   const gatewayResponse = check.stall.gatewayResponse ?? row.gateway_response;
@@ -88,6 +89,8 @@ async function compare(reference: string, candidates: Candidate[]): Promise<stri
 }
 
 async function main(): Promise<number> {
+  // Refuses to start on a disallowed key setup, before anything else runs.
+  const secretKey = paystackKeyFor("compare-models");
   const args = process.argv.slice(2);
   const specs: string[] = [];
   const references: string[] = [];
@@ -109,7 +112,7 @@ async function main(): Promise<number> {
     "| Reference | paystack_status | Rules | Requested | Reason, confidence | Answered by | Refusals | Rationale |",
     "| --- | --- | --- | --- | --- | --- | --- | --- |",
   ];
-  for (const reference of references) out.push(...(await compare(reference, candidates)));
+  for (const reference of references) out.push(...(await compare(reference, candidates, secretKey)));
   console.log(out.join("\n"));
   return 0;
 }

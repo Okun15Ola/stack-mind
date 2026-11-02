@@ -7,8 +7,11 @@ import { describe, it } from "node:test";
 import {
   PAYSTACK_FILE,
   REDACT_FILE,
+  ENTRYPOINT_FILES,
   allowlistViolations,
   availabilityGuardViolations,
+  entrypointNamingViolations,
+  liveEntrypointViolations,
   paystackGuardViolations,
   sectionsMissingAvailability,
   type SourceFile,
@@ -21,7 +24,7 @@ const PAYSTACK_OK = `
 const PAYSTACK_HOST = "api.paystack.co";
 export async function paystackRequest() { return fetch(\`https://\${PAYSTACK_HOST}/transaction\`); }
 // paystack-http:end
-export function paystackTestKey() { return process.env.PAYSTACK_SECRET_KEY; }
+export function paystackKeyFor() { return process.env.PAYSTACK_SECRET_KEY; }
 `;
 const REDACT_OK = `
 // availability:begin
@@ -82,4 +85,32 @@ describe("section() guard: negative fixtures", () => {
     assert.deepEqual(sectionsMissingAvailability({ gateway_response: "x", card: { available: false, why: "g" } }), []);
     bites(sectionsMissingAvailability({ gateway_response: "x", card: { type: "visa", bank: null } }), "card without available");
   });
+});
+
+describe("live-key guards: negative fixtures", () => {
+  it("the entrypoint list: adding the webhook, adding a name, or removing one", () => {
+    const base = ["poller", "diagnose-stall", "compare-models", "export-test-set"];
+    assert.deepEqual(liveEntrypointViolations(base), []);
+    bites(liveEntrypointViolations([...base, "webhook"]), "webhook added");
+    bites(liveEntrypointViolations([...base, "send-reminders"]), "a new entrypoint added");
+    bites(liveEntrypointViolations(base.slice(1)), "an entrypoint removed");
+  });
+
+  const file = (name: string, text: string): SourceFile => {
+    const path = Object.keys(ENTRYPOINT_FILES).find((p) => ENTRYPOINT_FILES[p] === name)!;
+    return { path, text };
+  };
+
+  it("a well-formed entrypoint passes", () => {
+    assert.deepEqual(entrypointNamingViolations([file("webhook", `secretKey = paystackKeyFor("webhook");`)]), []);
+  });
+
+  const cases: [string, SourceFile[]][] = [
+    ["the webhook asking for the key as the poller", [file("webhook", `secretKey = paystackKeyFor("poller");`)]],
+    ["a script asking under another script's name", [file("diagnose-stall", `const k = paystackKeyFor("export-test-set");`)]],
+    ["a library file asking for the key", [lib(`const k = paystackKeyFor("poller");`)]],
+    ["a non-literal entrypoint name", [file("compare-models", `const k = paystackKeyFor(name);`)]],
+    ["an entrypoint that never asks for its key", [file("poller", `const result = await pollPaystack(secretKey);`)]],
+  ];
+  for (const [label, files] of cases) it(label, () => bites(entrypointNamingViolations(files), label));
 });

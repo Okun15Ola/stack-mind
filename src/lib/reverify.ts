@@ -1,7 +1,6 @@
 import {
   SETTLED_STATUSES,
   listTransactions,
-  paystackTestKey,
   verifyTransaction,
 } from "@/lib/paystack";
 import { supabaseAdmin } from "@/lib/supabase-admin";
@@ -45,8 +44,8 @@ type StallForCheck = {
 //     reference, leaving the original abandoned forever).
 // Throws on any Paystack or database error. Callers must treat a throw as
 // "do not proceed".
-export async function reverifyStall(stallId: string): Promise<ReverifyResult> {
-  const secretKey = paystackTestKey();
+// secretKey is obtained once by the entrypoint, see paystackKeyFor in paystack.ts.
+export async function reverifyStall(stallId: string, secretKey: string): Promise<ReverifyResult> {
   const db = supabaseAdmin();
 
   const { data: stall, error } = await db

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   STALL_EVENTS,
-  paystackTestKey,
+  paystackKeyFor,
   stallFromEvent,
   verifyPaystackSignature,
   type PaystackEvent,
@@ -11,7 +11,8 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export async function POST(req: Request) {
   let secretKey: string;
   try {
-    secretKey = paystackTestKey();
+    // The webhook never accepts a live key: paystackKeyFor refuses it here.
+    secretKey = paystackKeyFor("webhook");
   } catch (err) {
     console.error("[paystack-webhook]", err instanceof Error ? err.message : err);
     return new NextResponse(null, { status: 500 });
