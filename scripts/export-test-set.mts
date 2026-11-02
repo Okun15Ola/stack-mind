@@ -17,6 +17,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { PaystackHttpError, listTransactionsPage, paystackTestKey } from "@/lib/paystack";
 
 type Tx = {
   status?: string | null;
@@ -40,9 +41,12 @@ const { values: args } = parseArgs({
   },
 });
 
-const key = process.env.PAYSTACK_SECRET_KEY;
-if (!key) fail("PAYSTACK_SECRET_KEY is not set (expected in .env.local)");
-if (!key.startsWith("sk_test_")) fail("PAYSTACK_SECRET_KEY is not a test key; refusing");
+let key: string;
+try {
+  key = paystackTestKey();
+} catch (err) {
+  fail(err instanceof Error ? err.message : "PAYSTACK_SECRET_KEY unusable");
+}
 
 const from = args.from ? new Date(args.from) : null;
 if (from && Number.isNaN(from.getTime())) fail(`--from is not a valid date: ${args.from}`);
@@ -57,26 +61,22 @@ function fail(message: string): never {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Goes through the allowlisted Paystack client, like every other call.
 async function fetchPage(page: number): Promise<Tx[]> {
-  const url = new URL("https://api.paystack.co/transaction");
-  url.searchParams.set("perPage", String(PER_PAGE));
-  url.searchParams.set("page", String(page));
-  if (from) url.searchParams.set("from", from.toISOString());
+  const params: Record<string, string> = { perPage: String(PER_PAGE), page: String(page) };
+  if (from) params.from = from.toISOString();
 
   for (let attempt = 1; ; attempt++) {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(30_000),
-    });
-    if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
-      await sleep(1000 * 2 ** attempt);
-      continue;
+    try {
+      return (await listTransactionsPage(key, params)) as Tx[];
+    } catch (err) {
+      const retryable = err instanceof PaystackHttpError && (err.status === 429 || err.status >= 500);
+      if (retryable && attempt < MAX_RETRIES) {
+        await sleep(1000 * 2 ** attempt);
+        continue;
+      }
+      fail(`page ${page}: ${err instanceof Error ? err.message : "unexpected error"}`);
     }
-    const body = (await res.json().catch(() => null)) as { status?: boolean; message?: string; data?: Tx[] } | null;
-    if (!res.ok || body?.status !== true || !Array.isArray(body.data)) {
-      fail(`page ${page}: HTTP ${res.status} ${body?.message ?? "unexpected response"}`);
-    }
-    return body.data;
   }
 }
 

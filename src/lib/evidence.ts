@@ -2,7 +2,7 @@ import { INSUFFICIENT_EVIDENCE, type Outcome, type Reason } from "@/lib/reasons"
 import type { ModelInput, SectionKey } from "@/lib/redact";
 
 // The evidence a diagnosis lacked, derived by code from the sections the
-// model input marks `available: false`. Never written by the model: it is a
+// model input marks as unavailable. Never written by the model: it is a
 // fact about our pipeline, not a judgement about the buyer.
 
 export const EVIDENCE_GAPS = ["behaviour_trail", "checkout_log", "card_details"] as const;

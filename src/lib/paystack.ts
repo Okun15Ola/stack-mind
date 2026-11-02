@@ -1,9 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-const PAYSTACK_API = "https://api.paystack.co";
-
 // Returns the Paystack secret key, refusing anything that is not a test key.
-// Live mode stays off until explicitly approved.
+// Live mode stays off until explicitly approved. This is the only place the
+// key is read from the environment.
 export function paystackTestKey(): string {
   const key = process.env.PAYSTACK_SECRET_KEY;
   if (!key) throw new Error("PAYSTACK_SECRET_KEY is not set");
@@ -139,24 +138,106 @@ export function stallFromTransaction(tx: PaystackTransaction, cutoff: Date): Sta
   };
 }
 
-async function paystackGet<T>(secretKey: string, path: string, params: Record<string, string> = {}): Promise<T> {
-  const url = new URL(path, PAYSTACK_API);
+// paystack-http:begin
+// Every Paystack API call goes through paystackRequest(), and only to an
+// endpoint on this allowlist.
+//
+// Why: a Paystack secret key is not read-only. The same key that verifies a
+// transaction can issue refunds and initiate transfers. "We don't call write
+// endpoints" is not a control, so this is: anything not listed is refused
+// before a request is sent. Opada only ever reads.
+//
+// Add an entry only for a read endpoint Opada actually needs, with a test.
+// tests/paystack-allowlist.test.ts fails if anything calls Paystack without
+// going through here.
+const PAYSTACK_HOST = "api.paystack.co";
+
+export const PAYSTACK_ALLOWLIST: readonly { method: "GET"; path: RegExp; name: string }[] = [
+  { method: "GET", path: /^\/transaction$/, name: "list transactions" },
+  { method: "GET", path: /^\/transaction\/verify\/[^/]+$/, name: "verify transaction" },
+];
+
+// Thrown before any request is sent. Names the method and the shape of the
+// path only: dynamic segments become ":param", and the query string, the key
+// and any customer data never appear.
+export class PaystackEndpointBlockedError extends Error {
+  constructor(
+    readonly method: string,
+    readonly endpoint: string,
+  ) {
+    super(`Paystack call blocked: ${method} ${endpoint} is not on the endpoint allowlist (src/lib/paystack.ts)`);
+    this.name = "PaystackEndpointBlockedError";
+  }
+}
+
+export class PaystackHttpError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "PaystackHttpError";
+  }
+}
+
+// "/customer/a@b.co" -> "/customer/:param". Only plain lowercase words survive.
+export function endpointShape(path: string): string {
+  return (
+    path
+      .split("?")[0]
+      .split("/")
+      .map((seg, i) => (i === 0 || /^[a-z_]+$/.test(seg) ? seg : ":param"))
+      .join("/") || "/"
+  );
+}
+
+function allowed(method: string, path: string): boolean {
+  return PAYSTACK_ALLOWLIST.some((e) => e.method === method && e.path.test(path));
+}
+
+export async function paystackRequest<T>(
+  secretKey: string,
+  method: string,
+  path: string,
+  params: Record<string, string> = {},
+): Promise<T> {
+  const verb = method.toUpperCase();
+  if (typeof path !== "string" || !path.startsWith("/") || path.includes("..") || path.includes("?") || path.includes("#")) {
+    throw new PaystackEndpointBlockedError(verb, endpointShape(String(path)));
+  }
+  if (!allowed(verb, path)) throw new PaystackEndpointBlockedError(verb, endpointShape(path));
+
+  const url = new URL(path, `https://${PAYSTACK_HOST}`);
+  if (url.host !== PAYSTACK_HOST || url.protocol !== "https:") {
+    throw new PaystackEndpointBlockedError(verb, endpointShape(path));
+  }
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
   const res = await fetch(url, {
+    method: verb,
     headers: { Authorization: `Bearer ${secretKey}` },
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(30_000),
     cache: "no-store",
+    // A redirect could land on an endpoint that isn't on the allowlist.
+    redirect: "error",
   });
   const body = (await res.json().catch(() => null)) as { status?: boolean; message?: string; data?: T } | null;
   if (!res.ok || body?.status !== true || body.data === undefined) {
-    throw new Error(`Paystack GET ${url.pathname}: HTTP ${res.status} ${body?.message ?? "unexpected response"}`);
+    throw new PaystackHttpError(res.status, `Paystack ${verb} ${endpointShape(path)}: HTTP ${res.status} ${body?.message ?? "unexpected response"}`);
   }
   return body.data;
 }
+// paystack-http:end
 
 const PER_PAGE = 100;
 const MAX_PAGES = 50;
+
+// One page of GET /transaction. params are Paystack's query parameters.
+export async function listTransactionsPage(secretKey: string, params: Record<string, string>): Promise<PaystackTransaction[]> {
+  const data = await paystackRequest<PaystackTransaction[]>(secretKey, "GET", "/transaction", params);
+  if (!Array.isArray(data)) throw new Error("Paystack list transactions: data is not an array");
+  return data;
+}
 
 export type ListFilter = { from: Date; to?: Date; status?: string; customer?: number };
 
@@ -170,8 +251,7 @@ export async function listTransactions(secretKey: string, filter: ListFilter): P
 
   const all: PaystackTransaction[] = [];
   for (let page = 1; page <= MAX_PAGES; page++) {
-    const data = await paystackGet<PaystackTransaction[]>(secretKey, "/transaction", { ...params, page: String(page) });
-    if (!Array.isArray(data)) throw new Error("Paystack list transactions: data is not an array");
+    const data = await listTransactionsPage(secretKey, { ...params, page: String(page) });
     all.push(...data);
     if (data.length < PER_PAGE) return all;
   }
@@ -182,5 +262,5 @@ export type VerifiedTransaction = PaystackTransaction & { customer?: PaystackCus
 
 // Current state of one transaction. Throws on any error, including an unknown reference.
 export function verifyTransaction(secretKey: string, reference: string): Promise<VerifiedTransaction> {
-  return paystackGet<VerifiedTransaction>(secretKey, `/transaction/verify/${encodeURIComponent(reference)}`);
+  return paystackRequest<VerifiedTransaction>(secretKey, "GET", `/transaction/verify/${encodeURIComponent(reference)}`);
 }
