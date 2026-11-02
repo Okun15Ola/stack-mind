@@ -67,7 +67,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 ## Paystack safety
 
 - **Never point the LIVE Paystack webhook URL at this app.** The live account's webhook serves ShopCart's production orders; repointing it would redirect them here. Webhook and poller work uses the test account only.
-- **Test keys only** (`sk_test_…`) until Okunola approves live. The code refuses anything else.
+- **Test keys (`sk_test_…`) everywhere,** except the narrow read-only live-key staging path below. Going live for real needs Okunola's explicit sign-off.
 - **A Paystack secret key is not read-only.** The same key that verifies a transaction can issue refunds and initiate transfers. "We don't call write endpoints" is not a control, so there is one:
   - **Every Paystack call goes through `paystackRequest()`** in `src/lib/paystack.ts`, which allows only the method and path pairs in `PAYSTACK_ALLOWLIST`. Today that's `GET /transaction` and `GET /transaction/verify/:reference`.
   - **Anything else is refused before a request is sent,** with an error that names the method and endpoint shape, never the key or customer data. Redirects are refused too.
@@ -77,7 +77,13 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   - the live webhook URL is never pointed at Opada (poller only);
   - dry-run is absolute, and no message reaches any real buyer.
 
-  The code's test-key gate (`paystackTestKey()`) is still in place. Lifting it for live is a separate PR, after the endpoint allowlist is merged.
+- **A live Paystack key exists ONLY for staging on Okunola's own Paystack account, read-only.** It is not a path to going live, and not for any other merchant's account. `paystackKeyFor()` in `src/lib/paystack.ts` accepts `sk_live_…` only when **all** of these hold:
+  1. **The entrypoint is one of `LIVE_KEY_ENTRYPOINTS`:** `poller`, `diagnose-stall`, `compare-models`, `export-test-set`. These only read from Paystack. **Never the webhook handler, and never anything that could send.** Adding an entrypoint to that list needs Okunola's sign-off.
+  2. **`PAYSTACK_LIVE_READ_ONLY=true` is set explicitly.** The key alone is not enough.
+  3. **`OPADA_DRY_RUN=true` is set explicitly.** With a live key and dry-run anything but explicitly on, the entrypoint refuses to start.
+  - **Every live-key run logs** `[paystack] LIVE secret key in use by <entrypoint>`.
+  - **Each entrypoint asks for the key once, at startup, under its own name,** and passes it down; library code never asks. `tests/guards.ts` checks every entrypoint uses its own name, as a string literal, and that nothing else asks. Negative fixtures prove that guard bites.
+  - **The endpoint allowlist still applies:** even a live key can only reach the allowlisted GET endpoints.
 
 ## Payment providers: direction, not yet built
 
@@ -111,6 +117,6 @@ If something seems to need a direct change to `main`, stop and ask Okunola first
 Ground rules that apply to every PR:
 
 - **No secrets in the repo.** Keys live only in Vercel, GitHub Actions secrets and your local `.env.local`, which is gitignored. `.env.example` has names only.
-- **Paystack test keys only** (`sk_test_…`). The code refuses anything else. Going live needs Okunola's explicit sign-off.
+- **Paystack test keys only** (`sk_test_…`), apart from the read-only live-key staging path under "Paystack safety". Going live needs Okunola's explicit sign-off.
 - **Guard tests require negative fixtures. A guard with no test proving it bites is not a guard.** A test that scans the code to forbid something (for example the Paystack bypass guard or the `section()` guard) must live in `tests/guards.ts` as a function, and must have fixtures in `tests/guard-fixtures.test.ts` that violate it and make it fail. Guards scan raw source text and don't strip comments: an earlier comment-stripper hid a URL-string bypass, which is exactly the failure these fixtures catch.
 - **SQL is never run by code or tooling.** You have no database access. Add a numbered file under `supabase/migrations/` and say in the PR that it needs running. Okunola runs all SQL himself in the Supabase SQL editor.

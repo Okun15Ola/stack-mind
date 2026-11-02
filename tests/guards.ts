@@ -107,3 +107,45 @@ export function sectionsMissingAvailability(input: Record<string, unknown>): str
     .filter(([, v]) => v !== null && typeof v === "object" && !Array.isArray(v) && !("available" in (v as object)))
     .map(([k]) => `section "${k}" was built without section()`);
 }
+
+// --- Live Paystack key: only the named read-only entrypoints -------------------
+
+export const EXPECTED_LIVE_ENTRYPOINTS = ["poller", "diagnose-stall", "compare-models", "export-test-set"];
+
+export function liveEntrypointViolations(list: readonly string[]): string[] {
+  const out: string[] = [];
+  if (JSON.stringify([...list]) !== JSON.stringify(EXPECTED_LIVE_ENTRYPOINTS)) {
+    out.push(`live-key entrypoints changed: expected ${JSON.stringify(EXPECTED_LIVE_ENTRYPOINTS)}, got ${JSON.stringify(list)}`);
+  }
+  if (list.includes("webhook")) out.push("the webhook handler must never accept a live key");
+  return out;
+}
+
+// Which entrypoint each file is. Only these files may call paystackKeyFor(),
+// each only with its own name, as a string literal.
+export const ENTRYPOINT_FILES: Record<string, string> = {
+  [join("src", "app", "api", "cron", "poll-paystack", "route.ts")]: "poller",
+  [join("src", "app", "api", "webhooks", "paystack", "route.ts")]: "webhook",
+  [join("scripts", "diagnose-stall.ts")]: "diagnose-stall",
+  [join("scripts", "compare-models.ts")]: "compare-models",
+  [join("scripts", "export-test-set.mts")]: "export-test-set",
+};
+
+export function entrypointNamingViolations(files: SourceFile[]): string[] {
+  const out: string[] = [];
+  for (const file of files) {
+    const own = ENTRYPOINT_FILES[file.path];
+    const calls = file.text
+      .split("\n")
+      .map((line, i) => ({ line, n: i + 1 }))
+      .filter(({ line }) => /\bpaystackKeyFor\s*\(/.test(line) && !/function\s+paystackKeyFor\s*\(/.test(line));
+    for (const { line, n } of calls) {
+      const m = line.match(/\bpaystackKeyFor\s*\(\s*["'`]([a-z-]+)["'`]\s*[,)]/);
+      if (!own) out.push(`${file.path}:${n}: paystackKeyFor() called outside a named entrypoint`);
+      else if (!m) out.push(`${file.path}:${n}: paystackKeyFor() must be called with a string literal`);
+      else if (m[1] !== own) out.push(`${file.path}:${n}: ${file.path} is "${own}" but asks for the key as "${m[1]}"`);
+    }
+    if (own && calls.length === 0) out.push(`${file.path}: entrypoint "${own}" never calls paystackKeyFor("${own}")`);
+  }
+  return out;
+}

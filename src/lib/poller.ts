@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { listTransactions, paystackTestKey, stallFromTransaction, type StallRow } from "@/lib/paystack";
+import { listTransactions, stallFromTransaction, type StallRow } from "@/lib/paystack";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 const POLLER_ID = "paystack_transactions";
@@ -27,8 +27,8 @@ function abandonAfterMs(): number {
 // upsert the stalls, then advance the cursor to the window's upper bound. Each
 // transaction is therefore judged once it is old enough, and the overlap plus
 // idempotent upserts cover clock skew and late indexing on Paystack's side.
-export async function pollPaystack(now = new Date()): Promise<PollResult> {
-  const secretKey = paystackTestKey();
+// secretKey is obtained by the poller entrypoint, see paystackKeyFor in paystack.ts.
+export async function pollPaystack(secretKey: string, now = new Date()): Promise<PollResult> {
   const abandonAfter = abandonAfterMs();
   const db = supabaseAdmin();
   const runId = randomUUID();

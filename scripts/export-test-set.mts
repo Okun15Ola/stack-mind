@@ -3,7 +3,8 @@
 //
 //   npm run export:test-set -- [--from 2025-01-01] [--out exports/test-set.json]
 //
-// Reads PAYSTACK_SECRET_KEY from .env.local (test keys only). Writes one local
+// Reads PAYSTACK_SECRET_KEY from .env.local through the key policy in
+// src/lib/paystack.ts (a live key only for read-only staging). Writes one local
 // file under exports/ (gitignored). Touches no database.
 //
 // Each record keeps only: status, amount, currency, gateway_response,
@@ -17,7 +18,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { PaystackHttpError, listTransactionsPage, paystackTestKey } from "@/lib/paystack";
+import { PaystackHttpError, listTransactionsPage, paystackKeyFor } from "@/lib/paystack";
 
 type Tx = {
   status?: string | null;
@@ -43,7 +44,7 @@ const { values: args } = parseArgs({
 
 let key: string;
 try {
-  key = paystackTestKey();
+  key = paystackKeyFor("export-test-set");
 } catch (err) {
   fail(err instanceof Error ? err.message : "PAYSTACK_SECRET_KEY unusable");
 }
@@ -140,7 +141,7 @@ const records = all
 
 const output = {
   generated_at: new Date().toISOString(),
-  paystack_mode: "test",
+  paystack_mode: key.startsWith("sk_live_") ? "live" : "test",
   history_from: from?.toISOString() ?? "all",
   notes: [
     "amount is in currency subunits (kobo, pesewas, cents).",

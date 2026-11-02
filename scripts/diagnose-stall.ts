@@ -7,11 +7,14 @@
 // Reads .env.local; test-mode Paystack key only.
 
 import { diagnoseStall } from "@/lib/diagnose";
+import { paystackKeyFor } from "@/lib/paystack";
 import { merchantView } from "@/lib/evidence";
 import { reverifyStall } from "@/lib/reverify";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 async function main(): Promise<number> {
+  // Refuses to start on a disallowed key setup, before anything else runs.
+  const secretKey = paystackKeyFor("diagnose-stall");
   const reference = process.argv[2];
   if (!reference) {
     console.error("usage: npm run diagnose -- <paystack_reference>");
@@ -29,7 +32,7 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const check = await reverifyStall(stall.id);
+  const check = await reverifyStall(stall.id, secretKey);
   if (check.outcome === "resolved") {
     console.log(JSON.stringify({ reference, outcome: "resolved", paidReference: check.paidReference }, null, 2));
     return 0;

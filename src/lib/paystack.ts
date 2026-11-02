@@ -1,12 +1,57 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-// Returns the Paystack secret key, refusing anything that is not a test key.
-// Live mode stays off until explicitly approved. This is the only place the
-// key is read from the environment.
-export function paystackTestKey(): string {
-  const key = process.env.PAYSTACK_SECRET_KEY;
-  if (!key) throw new Error("PAYSTACK_SECRET_KEY is not set");
-  if (!key.startsWith("sk_test_")) throw new Error("PAYSTACK_SECRET_KEY is not a test key; refusing");
+// --- Which key, for which entrypoint -----------------------------------------
+//
+// A test key (sk_test_) works everywhere. A LIVE key (sk_live_) exists only
+// for staging on Okunola's own Paystack account, read-only, and is accepted
+// only when ALL of these hold:
+//   1. the entrypoint is one of LIVE_KEY_ENTRYPOINTS, the named read-only
+//      scripts. Never the webhook handler, never anything that could send;
+//   2. PAYSTACK_LIVE_READ_ONLY=true is set explicitly (the key alone is not
+//      enough);
+//   3. OPADA_DRY_RUN=true is set explicitly. With a live key and dry-run
+//      anything but explicitly on, the entrypoint refuses to start.
+// Every live-key run logs that it used a live key, with the entrypoint name.
+// The endpoint allowlist (paystackRequest) still limits every call to reads.
+//
+// Each entrypoint asks for the key once, at startup, under its own name, and
+// passes the key down. tests/guards.ts checks each file names itself
+// correctly. This is the only place the key is read from the environment.
+
+export const LIVE_KEY_ENTRYPOINTS = ["poller", "diagnose-stall", "compare-models", "export-test-set"] as const;
+export type PaystackEntrypoint = (typeof LIVE_KEY_ENTRYPOINTS)[number] | "webhook";
+
+export const LIVE_KEY_FLAG = "PAYSTACK_LIVE_READ_ONLY";
+export const DRY_RUN_FLAG = "OPADA_DRY_RUN";
+
+// Never carries the key.
+export class PaystackKeyRefusedError extends Error {
+  constructor(entrypoint: string, why: string) {
+    super(`Paystack key refused for ${entrypoint}: ${why}`);
+    this.name = "PaystackKeyRefusedError";
+  }
+}
+
+export function paystackKeyFor(
+  entrypoint: PaystackEntrypoint,
+  env: Record<string, string | undefined> = process.env,
+  log: (line: string) => void = (line) => console.warn(line),
+): string {
+  const key = env.PAYSTACK_SECRET_KEY?.trim();
+  if (!key) throw new PaystackKeyRefusedError(entrypoint, "PAYSTACK_SECRET_KEY is not set");
+  if (key.startsWith("sk_test_")) return key;
+  if (!key.startsWith("sk_live_")) throw new PaystackKeyRefusedError(entrypoint, "PAYSTACK_SECRET_KEY is neither a test nor a live secret key");
+
+  if (!(LIVE_KEY_ENTRYPOINTS as readonly string[]).includes(entrypoint)) {
+    throw new PaystackKeyRefusedError(entrypoint, `a live key is only accepted by the read-only entrypoints (${LIVE_KEY_ENTRYPOINTS.join(", ")})`);
+  }
+  if (env[LIVE_KEY_FLAG] !== "true") {
+    throw new PaystackKeyRefusedError(entrypoint, `a live key needs ${LIVE_KEY_FLAG}=true set explicitly`);
+  }
+  if (env[DRY_RUN_FLAG] !== "true") {
+    throw new PaystackKeyRefusedError(entrypoint, `refusing to start: live key present and ${DRY_RUN_FLAG} is not explicitly true`);
+  }
+  log(`[paystack] LIVE secret key in use by ${entrypoint} (read-only staging on Okunola's account, dry-run)`);
   return key;
 }
 
