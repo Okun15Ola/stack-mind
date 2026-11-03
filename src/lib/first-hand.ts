@@ -20,7 +20,14 @@ import type { Outcome } from "@/lib/reasons";
 // from the model's rationale.
 
 export const FIRST_HAND_TYPES = [
-  // Paystack's own description of the outcome, fetched by Opada.
+  // Paystack's own description of the outcome, fetched by Opada, counted
+  // ONLY when the deterministic gateway rules (src/lib/gateway-rules.ts)
+  // matched the same reason. Text the rules don't recognise ("The transaction
+  // was not completed") says nothing about a card, so counting it for a
+  // model-assigned CARD_FAILING would make the gate rubber-stamp the model's
+  // guess. First-hand evidence must corroborate the reason independently.
+  // This makes the rules classifier a safety component: never remove it as
+  // redundant with the model.
   "paystack:gateway_response",
   // The merchant's server received the buyer's question (a form submission).
   "server_observed:question_asked",
@@ -47,14 +54,16 @@ export const FIRST_HAND_FOR_REASON: Record<Outcome, readonly FirstHandType[]> = 
 };
 
 export type EvidenceFacts = {
-  gatewayResponse: string | null;
+  // The reason the deterministic gateway rules matched on Paystack's
+  // gateway_response, or null if they matched nothing. Never the model's.
+  gatewayRulesReason: Outcome | null;
   trailEvents: readonly Pick<StoredEvent, "type" | "source" | "properties">[];
 };
 
-function present(type: FirstHandType, facts: EvidenceFacts): boolean {
+function present(type: FirstHandType, reason: Outcome, facts: EvidenceFacts): boolean {
   switch (type) {
     case "paystack:gateway_response":
-      return typeof facts.gatewayResponse === "string" && facts.gatewayResponse.trim().length > 0;
+      return facts.gatewayRulesReason === reason;
     case "server_observed:question_asked":
       return facts.trailEvents.some((e) => e.type === "question_asked" && e.source === "server_observed");
   }
@@ -62,7 +71,7 @@ function present(type: FirstHandType, facts: EvidenceFacts): boolean {
 
 // The first-hand evidence present FOR this reason, in table order.
 export function firstHandEvidence(reason: Outcome, facts: EvidenceFacts): FirstHandType[] {
-  return FIRST_HAND_FOR_REASON[reason].filter((t) => present(t, facts));
+  return FIRST_HAND_FOR_REASON[reason].filter((t) => present(t, reason, facts));
 }
 
 // The Ask-once gate, for the Mandate. Standing actions don't consult it.

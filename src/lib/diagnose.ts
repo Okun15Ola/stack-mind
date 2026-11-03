@@ -245,7 +245,7 @@ export async function diagnoseStall(
       evidenceGaps: [],
       // The rules read gateway_response only; no trail is joined.
       trailSources: trailSources([]),
-      firstHandEvidence: firstHandEvidence(ruled.reason, { gatewayResponse, trailEvents: [] }),
+      firstHandEvidence: firstHandEvidence(ruled.reason, { gatewayRulesReason: ruled.reason, trailEvents: [] }),
     };
   } else {
     const model = deps.model === undefined ? getDiagnosisModel() : deps.model;
@@ -294,7 +294,9 @@ export async function diagnoseStall(
       refusals,
       evidenceGaps: gaps,
       trailSources: trailSources(joined),
-      firstHandEvidence: firstHandEvidence(classification.reason, { gatewayResponse, trailEvents: joined }),
+      // The model path runs only when the gateway rules matched nothing, so
+      // gateway_response is never first-hand here (see src/lib/first-hand.ts).
+      firstHandEvidence: firstHandEvidence(classification.reason, { gatewayRulesReason: null, trailEvents: joined }),
     };
     assertFresh(stall, now());
   }

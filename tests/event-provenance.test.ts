@@ -101,14 +101,20 @@ describe("first-hand evidence, per reason", () => {
     assert.deepEqual(Object.keys(FIRST_HAND_FOR_REASON).sort(), [...OUTCOMES].sort());
   });
 
+  it("gateway_response counts only when the gateway rules matched the SAME reason", () => {
+    assert.deepEqual(firstHandEvidence("CARD_FAILING", { gatewayRulesReason: null, trailEvents: [] }), []);
+    assert.deepEqual(firstHandEvidence("CARD_FAILING", { gatewayRulesReason: "NO_FUNDS_NOW", trailEvents: [] }), []);
+    assert.deepEqual(firstHandEvidence("NO_FUNDS_NOW", { gatewayRulesReason: "NO_FUNDS_NOW", trailEvents: [] }), ["paystack:gateway_response"]);
+  });
+
   it("a gateway-derived reason counts Paystack's gateway_response, fetched by Opada", () => {
-    const fh = firstHandEvidence("CARD_FAILING", { gatewayResponse: "Declined", trailEvents: [] });
+    const fh = firstHandEvidence("CARD_FAILING", { gatewayRulesReason: "CARD_FAILING", trailEvents: [] });
     assert.deepEqual(fh, ["paystack:gateway_response"]);
     assert.equal(askOnceAllowed({ reason: "CARD_FAILING", first_hand_evidence: fh }), true);
   });
 
   it("FOR THE REASON: a server_observed payment_started does not make NO_TRUST first-hand", () => {
-    const facts = { gatewayResponse: "The transaction was not completed", trailEvents: [ev("payment_started", "server_observed")] };
+    const facts = { gatewayRulesReason: null, trailEvents: [ev("payment_started", "server_observed")] };
     const fh = firstHandEvidence("NO_TRUST", facts);
     assert.deepEqual(fh, []);
     assert.equal(askOnceAllowed({ reason: "NO_TRUST", first_hand_evidence: fh }), false);
@@ -120,14 +126,14 @@ describe("first-hand evidence, per reason", () => {
   });
 
   it("UNANSWERED_QUESTION: a server-observed form question counts; relayed or client questions don't", () => {
-    assert.deepEqual(firstHandEvidence("UNANSWERED_QUESTION", { gatewayResponse: null, trailEvents: [ev("question_asked", "server_observed", { channel: "form" })] }), ["server_observed:question_asked"]);
+    assert.deepEqual(firstHandEvidence("UNANSWERED_QUESTION", { gatewayRulesReason: null, trailEvents: [ev("question_asked", "server_observed", { channel: "form" })] }), ["server_observed:question_asked"]);
     for (const source of ["server_relayed", "client"] as const) {
-      assert.deepEqual(firstHandEvidence("UNANSWERED_QUESTION", { gatewayResponse: null, trailEvents: [ev("question_asked", source, { channel: "form" }), ev("info_viewed", source, { kind: "refund_or_returns" })] }), []);
+      assert.deepEqual(firstHandEvidence("UNANSWERED_QUESTION", { gatewayRulesReason: null, trailEvents: [ev("question_asked", source, { channel: "form" }), ev("info_viewed", source, { kind: "refund_or_returns" })] }), []);
     }
   });
 
   it("browser-originated evidence never qualifies alone, for any reason", () => {
-    const browserOnly = { gatewayResponse: null, trailEvents: (["server_relayed", "client"] as const).flatMap((s) => [ev("info_viewed", s, { kind: "pricing" }), ev("question_asked", s, { channel: "form" }), ev("payment_closed", s), ev("checkout_left", s)]) };
+    const browserOnly = { gatewayRulesReason: null, trailEvents: (["server_relayed", "client"] as const).flatMap((s) => [ev("info_viewed", s, { kind: "pricing" }), ev("question_asked", s, { channel: "form" }), ev("payment_closed", s), ev("checkout_left", s)]) };
     for (const reason of OUTCOMES) assert.deepEqual(firstHandEvidence(reason, browserOnly), [], reason);
   });
 
@@ -201,6 +207,17 @@ describe("each diagnosis stores what it rested on, computed by code", () => {
     assert.deepEqual(saved[0].trail_sources, { server_observed: 1, server_relayed: 2, client: 0 });
     assert.deepEqual(saved[0].first_hand_evidence, []);
     assert.equal(askOnceAllowed({ reason: "UNANSWERED_QUESTION", first_hand_evidence: saved[0].first_hand_evidence }), false);
+  });
+
+  it("model says CARD_FAILING, gateway rules matched nothing, text is \"The transaction was not completed\": Ask-once blocked", async () => {
+    const row: StallForDiagnosis = { id: "s4", status: "new", gateway_response: "The transaction was not completed", amount: 1, currency: "NGN", event_type: "transaction.abandoned", customer_identifier: null, payload: {} };
+    const model: DiagnosisModel = { classify: async () => ({ output: { reason: "CARD_FAILING", confidence: 0.9, rationale: "x" }, model: "fake:m", refusals: [] }) };
+    const saved: DiagnosisRow[] = [];
+    await diagnoseStall(verified(row), { store: store(row, [], saved), model, now: () => NOW2, log: () => {} });
+    assert.equal(saved[0].model, "fake:m", "the model answered: the rules matched nothing");
+    assert.equal(saved[0].reason, "CARD_FAILING");
+    assert.deepEqual(saved[0].first_hand_evidence, []);
+    assert.equal(askOnceAllowed({ reason: "CARD_FAILING", first_hand_evidence: saved[0].first_hand_evidence }), false);
   });
 
   it("whatever the model writes about its evidence is ignored", async () => {
