@@ -180,3 +180,27 @@ export function merchantGateViolations(files: SourceFile[]): string[] {
   if (check > load) return [`${DIAGNOSE_FILE}: loadTrail() checks the merchant count only after loading events`];
   return [];
 }
+
+// --- First-hand table: browser-originated evidence never qualifies -------------
+// FIRST_HAND_FOR_REASON (src/lib/first-hand.ts) may list only Paystack fields
+// Opada fetched and server_observed events that bear on a reason. Never
+// server_relayed, client or the provider-relayed checkout log; never
+// payment_started or checkout_started, which say nothing about why.
+
+const NEVER_FIRST_HAND = /relayed|client|checkout_log|paystack:log|server_observed:(payment_started|checkout_started)|browser/;
+
+export function firstHandTableViolations(types: readonly string[], table: Record<string, readonly string[]>): string[] {
+  const out: string[] = [];
+  for (const t of types) {
+    if (!/^(paystack|server_observed):[a-z_]+$/.test(t)) out.push(`first-hand type "${t}" is neither a Paystack field nor a server_observed event`);
+    if (NEVER_FIRST_HAND.test(t)) out.push(`"${t}" can never be first-hand evidence`);
+  }
+  for (const [reason, list] of Object.entries(table)) {
+    for (const t of list) {
+      if (!types.includes(t)) out.push(`${reason} lists "${t}", which isn't a declared first-hand type`);
+      if (NEVER_FIRST_HAND.test(t)) out.push(`${reason} lists "${t}", which can never be first-hand evidence`);
+    }
+  }
+  if ((table.INSUFFICIENT_EVIDENCE ?? []).length) out.push("INSUFFICIENT_EVIDENCE must list no first-hand evidence: it maps to no action");
+  return out;
+}

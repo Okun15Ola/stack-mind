@@ -135,7 +135,8 @@ describe("accepted requests", () => {
     const res = await handleBehaviourEvents(signed(BODY), bytes(BODY), NOW, { keys: storeWith(registered), sink, retention: fresh });
     assert.equal(res.status, 202);
     assert.deepEqual(res.body, { accepted: 1, duplicates: 0, rejected: [] });
-    assert.equal(stored[0].source, "server");
+    // No `observed` declared: the safe default, a relayed browser report.
+    assert.equal(stored[0].source, "server_relayed");
     assert.equal(stored[0].merchant_id, "okunola");
     assert.equal(stored[0].emitter_id, KEY_ID);
   });

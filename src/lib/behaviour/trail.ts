@@ -5,7 +5,8 @@ import { refLooksLikePii, validRef, type BehaviourEvent, type EventSource } from
 
 export const JOIN_TAIL_MS = 15 * 60 * 1000;
 
-export type StoredEvent = BehaviourEvent & { source: EventSource };
+// As stored: `observed` is folded into `source` at ingest.
+export type StoredEvent = Omit<BehaviourEvent, "observed"> & { source: EventSource };
 
 export type TrailRefs = { buyerRef: string | null; sessionRef: string | null };
 
@@ -68,7 +69,10 @@ export function selectTrailEvents(refs: TrailRefs, createdAt: Date, candidates: 
 export type TrailFact = {
   type: BehaviourEvent["type"];
   at_second: number;
-  source: EventSource;
+  // Who observed the event. Named "provenance" in model input, never
+  // "source": "source" is reserved for the stall's own webhook/poll origin,
+  // which must never reach a prompt.
+  provenance: EventSource;
   device: BehaviourEvent["device"];
   kind?: string;
   channel?: string;
@@ -91,7 +95,7 @@ export function trailFacts(events: StoredEvent[]): TrailFact[] {
     const fact: TrailFact = {
       type: e.type,
       at_second: Math.round((Date.parse(e.occurred_at) - t0) / 1000),
-      source: e.source,
+      provenance: e.source,
       device: e.device,
     };
     for (const p of FACT_PROPS) if (p in e.properties) (fact as Record<string, unknown>)[p] = e.properties[p];
@@ -99,5 +103,35 @@ export function trailFacts(events: StoredEvent[]): TrailFact[] {
   });
 }
 
-export const CLIENT_EVENTS_NOTE =
-  'Events with "source": "client" came from a browser snippet and can be forged by anyone. Treat them as weak evidence: they can support a reason but never establish one on their own. "server" events were signed by the merchant\'s server.';
+// What each non-first-hand source means, stated plainly in the model input
+// whenever such events are present. No numeric weights: server_relayed and
+// client are the same class (browser assertions) but not equally forgeable,
+// and flattening them into one number would hide that.
+export const SOURCE_NOTES = {
+  common:
+    'Events with "provenance": "server_observed" were seen by the merchant\'s own server during its own work. Events with any other provenance are browser assertions: they can support a reason but never establish one on their own.',
+  server_relayed:
+    '"server_relayed" events were reported by the buyer\'s browser and passed on by the merchant\'s server, which vouches that it sent them, not that they happened. Anyone able to call the merchant\'s own endpoint could have faked one.',
+  client:
+    '"client" events were sent straight from a browser with a public key. Anyone could have faked one, and no merchant vouches for them.',
+} as const;
+
+export function sourcesNote(facts: TrailFact[]): string | null {
+  const relayed = facts.some((f) => f.provenance === "server_relayed");
+  const client = facts.some((f) => f.provenance === "client");
+  if (!relayed && !client) return null;
+  return [SOURCE_NOTES.common, relayed ? SOURCE_NOTES.server_relayed : null, client ? SOURCE_NOTES.client : null]
+    .filter(Boolean)
+    .join(" ");
+}
+
+// How many joined events came from each source. Computed by code at
+// diagnosis time and stored on the diagnosis, so the owner can see what a
+// decision rested on. Never read from the model.
+export type TrailSources = Record<EventSource, number>;
+
+export function trailSources(events: { source: EventSource }[]): TrailSources {
+  const counts: TrailSources = { server_observed: 0, server_relayed: 0, client: 0 };
+  for (const e of events) counts[e.source]++;
+  return counts;
+}

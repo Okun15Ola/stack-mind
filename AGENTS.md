@@ -56,6 +56,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - **Requirements for the Mandate when it's built** (not before):
   - `INSUFFICIENT_EVIDENCE` maps to no remedy.
   - Every remedy has an owner-set minimum confidence, as a second line of defence behind `INSUFFICIENT_EVIDENCE`. Below it, no action.
+  - Ask-once remedies pass `askOnceAllowed()` (see Behaviour trail, provenance). Standing remedies don't need first-hand evidence.
   - **The confidence floor is NEVER applied to `INSUFFICIENT_EVIDENCE`.** An `INSUFFICIENT_EVIDENCE` at 0.85 would pass a 0.7 floor while meaning the opposite of what it looks like. The floor only ever compares against confidence in a reason.
 - **Never add fields that carry the status** to model input: status, `abandoned_by`, `paystack_status`, `event_type`, `source`.
 
@@ -96,7 +97,18 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
   - **The ±300-second timestamp window is enforced.**
   - `event_id` is deduplicated per merchant.
   - Keys are generated with `npm run emitter-key` on the emitter's side. The private key is never sent to Opada.
-- **Event `source` is set by Opada from the credential, never from the body.** It reaches the model input on every event. Client-sourced events are weak evidence and, per the Mandate requirements, never enough alone to trigger an action.
+- **Event provenance (`source`, decided 3 November 2026, #12 decision 3) is set by Opada, never trusted from the body.**
+  - Three values: `server_observed` (a signed request whose server declared `observed: "server"` for an event it handled itself), `server_relayed` (signed, but the event happened in the browser), and `client` (publishable key, not built yet).
+  - **`observed` can only lower trust.** A server can never claim `info_viewed`, `checkout_left`, `payment_closed`, or a non-form `question_asked`; such events are rejected, not downgraded (`serverCanObserve()` in `src/lib/behaviour/contract.ts`).
+  - In model input the per-event key is **`provenance`**, never `source`: `source` stays banned there because the stall's webhook/poll `source` carries status.
+  - **Relayed and client are the same class but not equally forgeable.** Both are browser-originated. Relayed needs an emitter's signing key plus a browser lie; client needs only the browser. Keep both labels, state the difference in words (`SOURCE_NOTES` in `src/lib/behaviour/trail.ts`), and **never give provenance a numeric weight**.
+  - Paystack's checkout log is labelled `provenance: "provider_relayed"`: Paystack relays what its checkout saw in the browser.
+- **The Mandate gate goes by band, and the Ask-once band needs first-hand evidence FOR THE REASON** (`src/lib/first-hand.ts`):
+  - **Standing** actions may run on browser-originated evidence.
+  - **Ask-once** actions require at least one first-hand fact listed for the reason being acted on in `FIRST_HAND_FOR_REASON`. First-hand means a Paystack field Opada fetched itself, or a `server_observed` event. Browser-originated evidence (`server_relayed`, `client`, the provider-relayed checkout log) never qualifies alone.
+  - A first-hand fact that doesn't bear on the reason doesn't count: a `server_observed` `payment_started` proves the buyer started paying, not that they distrusted the merchant, so `NO_TRUST` and `FORGOT` list nothing.
+  - The table is read by code and checked by a guard test with negative fixtures (`firstHandTableViolations`). Every diagnosis stores `trail_sources` (per-source counts) and `first_hand_evidence`, both computed by code, never by the model.
+  - The reversal: before 3 November the plan was "client-sourced events never trigger an action alone". The rule is now by band, as above.
 - **No free text anywhere in an event.** Unknown fields, properties and enum values are rejected, and errors never echo values.
 - **The trail is forward-only.** A transaction joins only if `opada_buyer_ref` was in its Paystack metadata at creation. The join is on `session_ref`, else on `buyer_ref` from the buyer's last `checkout_started`.
 - **Principle: if we cannot prove we are deleting, we stop collecting.** This holds for any data Opada keeps on a retention limit, not just behaviour events. Collection depends on deletion being demonstrably on schedule, not the other way round. A new store with a retention promise gets the same treatment: a recorded purge, an overdue check, and collection refused while it's overdue.

@@ -1,8 +1,9 @@
 import { ModelRefusedError, ModelUnparseableError, getDiagnosisModel, type DiagnosisModel, type ModelRefusal } from "@/lib/diagnosis-model";
 import { RULES_MODEL_ID, classifyGatewayResponse } from "@/lib/gateway-rules";
-import { JOIN_TAIL_MS, selectTrailEvents, trailRefsFromTransaction, type StoredEvent, type TrailRefs, type TrailSelection } from "@/lib/behaviour/trail";
+import { JOIN_TAIL_MS, selectTrailEvents, trailRefsFromTransaction, trailSources, type TrailSources, type StoredEvent, type TrailRefs, type TrailSelection } from "@/lib/behaviour/trail";
 import { assertSingleMerchant } from "@/lib/behaviour/merchants";
 import { evidenceGaps, type EvidenceGap } from "@/lib/evidence";
+import { firstHandEvidence, type FirstHandType } from "@/lib/first-hand";
 import { isOutcome, type Classification } from "@/lib/reasons";
 import { PiiLeakError, assertNoPii, buildModelInput, knownIdentifiers, scrubText, transactionFromPayload, type StallForModel } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
@@ -16,6 +17,9 @@ const MAX_RATIONALE_CHARS = 1000;
 export type DiagnosisResult = Classification & {
   // See DiagnosisRow.evidence_gaps.
   evidenceGaps: EvidenceGap[];
+  // See DiagnosisRow.trail_sources and first_hand_evidence.
+  trailSources: TrailSources;
+  firstHandEvidence: FirstHandType[];
   stallId: string;
   // The model that actually produced the diagnosis; after a refusal fallback,
   // the fallback model.
@@ -54,6 +58,13 @@ export type DiagnosisRow = {
   // Empty for rule diagnoses (no model input is built). For an
   // INSUFFICIENT_EVIDENCE diagnosis, this is what would have been needed.
   evidence_gaps: EvidenceGap[];
+  // How many joined behaviour events came from each source, computed by code
+  // when the input was built. What the decision rested on, for the owner and
+  // for measuring later how often browser-only evidence was right.
+  trail_sources: TrailSources;
+  // First-hand evidence present FOR this reason (src/lib/first-hand.ts),
+  // computed by code. The Mandate's Ask-once gate reads this.
+  first_hand_evidence: FirstHandType[];
 };
 
 export interface DiagnosisStore {
@@ -225,7 +236,17 @@ export async function diagnoseStall(
 
   const ruled = classifyGatewayResponse(gatewayResponse);
   if (ruled) {
-    result = { ...ruled, stallId: stall.id, model: RULES_MODEL_ID, source: "rules", refusals: [], evidenceGaps: [] };
+    result = {
+      ...ruled,
+      stallId: stall.id,
+      model: RULES_MODEL_ID,
+      source: "rules",
+      refusals: [],
+      evidenceGaps: [],
+      // The rules read gateway_response only; no trail is joined.
+      trailSources: trailSources([]),
+      firstHandEvidence: firstHandEvidence(ruled.reason, { gatewayResponse, trailEvents: [] }),
+    };
   } else {
     const model = deps.model === undefined ? getDiagnosisModel() : deps.model;
     if (!model) {
@@ -263,7 +284,18 @@ export async function diagnoseStall(
     if (typeof modelId !== "string" || !modelId.trim()) throw new Error(`stall ${stall.id}: provider did not name the model that answered`);
     if (!Array.isArray(refusals)) throw new Error(`stall ${stall.id}: provider did not report refusals`);
     logRefusals(log, stall.id, refusals, modelId);
-    result = { ...validateClassification(output), stallId: stall.id, model: modelId, source: "model", refusals, evidenceGaps: gaps };
+    const classification = validateClassification(output);
+    const joined = trail.kind === "events" ? trail.events : [];
+    result = {
+      ...classification,
+      stallId: stall.id,
+      model: modelId,
+      source: "model",
+      refusals,
+      evidenceGaps: gaps,
+      trailSources: trailSources(joined),
+      firstHandEvidence: firstHandEvidence(classification.reason, { gatewayResponse, trailEvents: joined }),
+    };
     assertFresh(stall, now());
   }
 
@@ -274,6 +306,8 @@ export async function diagnoseStall(
     rationale: result.rationale,
     model: result.model,
     evidence_gaps: result.evidenceGaps,
+    trail_sources: result.trailSources,
+    first_hand_evidence: result.firstHandEvidence,
   });
   return result;
 }

@@ -57,7 +57,40 @@ export const EVENT_TYPES = {
 
 export type EventType = keyof typeof EVENT_TYPES;
 export type Device = (typeof DEVICES)[number];
-export type EventSource = "server" | "client";
+// Provenance (issue #12, decisions of 3 November 2026): who OBSERVED an
+// event, not just who sent it. Opada assigns it, never the request body.
+//   server_observed: the merchant's server saw it happen during its own work
+//                    (a request it handled, an API call it made). First-hand.
+//   server_relayed:  the buyer's browser reported it and the merchant's server
+//                    forwarded it under its signature. The merchant vouches
+//                    that it SENT the event, not that it happened.
+//   client:          a browser sent it straight to Opada with a publishable
+//                    key. No merchant vouches for anything.
+// server_relayed and client are the same class (browser assertions, never
+// first-hand) but not equally forgeable. Keep both labels; never give either
+// a numeric weight.
+export const EVENT_SOURCES = ["server_observed", "server_relayed", "client"] as const;
+export type EventSource = (typeof EVENT_SOURCES)[number];
+
+// What the emitter declares it observed. Can only lower trust: missing means
+// browser, and a publishable key always forces browser.
+export const OBSERVERS = ["server", "browser"] as const;
+export type Observer = (typeof OBSERVERS)[number];
+
+// Event types a server can honestly observe, and under what condition.
+// info_viewed, checkout_left and payment_closed are browser facts: a server
+// that notices silence hasn't observed someone leaving.
+export function serverCanObserve(type: EventType, properties: Record<string, string | number>): boolean {
+  switch (type) {
+    case "payment_started": // the server's own Paystack initialize call
+    case "checkout_started": // only from a handler the checkout must call; the emitter's obligation
+      return true;
+    case "question_asked": // only a form submission that reached the server
+      return properties.channel === "form";
+    default:
+      return false;
+  }
+}
 
 export type BehaviourEvent = {
   event_id: string;
@@ -67,6 +100,9 @@ export type BehaviourEvent = {
   session_ref: string | null;
   device: Device | null;
   properties: Record<string, string | number>;
+  // What the emitter declares it observed. Missing in the request means
+  // "browser".
+  observed: Observer;
 };
 
 export type RejectionCode =
@@ -80,6 +116,8 @@ export type RejectionCode =
   | "invalid_session_ref"
   | "ref_looks_like_pii"
   | "invalid_device"
+  | "invalid_observed"
+  | "server_observation_not_possible"
   | "properties_not_an_object"
   | "unknown_property"
   | "missing_property"
@@ -87,7 +125,7 @@ export type RejectionCode =
 
 export type ParseResult = { ok: true; event: BehaviourEvent } | { ok: false; event_id: string | null; error: RejectionCode };
 
-const ENVELOPE_FIELDS = new Set(["event_id", "type", "occurred_at", "buyer_ref", "session_ref", "device", "properties"]);
+const ENVELOPE_FIELDS = new Set(["event_id", "type", "occurred_at", "buyer_ref", "session_ref", "device", "observed", "properties"]);
 
 // A ref that passes the format but looks like a phone number or card number
 // (all digits) is refused: refs must be random, never derived from PII.
@@ -122,6 +160,8 @@ export function parseEvent(raw: unknown, now: Date): ParseResult {
   if (refLooksLikePii(o.buyer_ref) || (sessionRef && refLooksLikePii(sessionRef))) return fail("ref_looks_like_pii");
 
   if (o.device !== undefined && o.device !== null && !(DEVICES as readonly unknown[]).includes(o.device)) return fail("invalid_device");
+  if (o.observed !== undefined && o.observed !== null && !(OBSERVERS as readonly unknown[]).includes(o.observed)) return fail("invalid_observed");
+  const observed: Observer = (o.observed as Observer | null | undefined) ?? "browser";
 
   const spec = EVENT_TYPES[type];
   const props = o.properties === undefined ? {} : o.properties;
@@ -142,6 +182,8 @@ export function parseEvent(raw: unknown, now: Date): ParseResult {
     out[name] = value as string | number;
   }
   for (const r of spec.required as readonly string[]) if (!(r in out)) return fail("missing_property");
+  // A claim that can't be true is rejected, not downgraded.
+  if (observed === "server" && !serverCanObserve(type, out)) return fail("server_observation_not_possible");
 
   return {
     ok: true,
@@ -153,6 +195,7 @@ export function parseEvent(raw: unknown, now: Date): ParseResult {
       session_ref: sessionRef,
       device: (o.device as Device | null | undefined) ?? null,
       properties: out,
+      observed,
     },
   };
 }
