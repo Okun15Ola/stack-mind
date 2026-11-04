@@ -4,6 +4,8 @@
 
 Opada sits between a merchant's checkout and their payment gateway. It watches every customer who tries to pay and doesn't, works out why, and acts on it within limits the business owner sets.
 
+What Opada is, what Kemi does and what it promises merchants is in **[`docs/brief.md`](docs/brief.md)**, the source of truth for the product. Engineering rules are in [`AGENTS.md`](AGENTS.md).
+
 ## How it works
 
 Four stages, in order:
