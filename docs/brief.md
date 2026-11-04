@@ -71,7 +71,7 @@ The answer is the Mandate. **The business owner writes the Mandate. Kemi never w
 | **Ask once** | Offer a discount. Message on WhatsApp instead of email. Reach someone outside normal hours. Anything not in Standing. | Yes, the first time. Then never again for that kind of action. |
 | **Never** | Change a price. Issue a refund. Touch card details. Contact someone who opted out. Exceed the message cap. | No permission unlocks these. Ever. |
 
-**How Ask once works in practice.** A customer abandons a ₦45,000 order after reading the pricing page twice. Kemi believes a 10% discount would close it. That is not in Standing, so she stops and asks the owner, with the actual customer and the actual number in front of them. The owner says yes, and sets the conditions: discounts up to 10%, orders above ₦20,000, once per customer.
+**How Ask once works in practice.** A buyer who has completed orders with this merchant before has a payment fail with insufficient funds, late in the month. Paystack's own `gateway_response` says so, and the gateway rules match it to `NO_FUNDS_NOW`, so the diagnosis rests on first-hand evidence and the Ask once gate can open. Kemi believes a 10% discount would close it. A discount is not in Standing, so she stops and asks the owner, with the actual buyer and the actual amount in front of them. The owner says yes, and sets the conditions: discounts up to 10%, orders above ₦20,000, once per customer.
 
 From that moment, discounting under those conditions is part of Standing. She never asks about it again.
 
@@ -141,6 +141,50 @@ The earlier order (snippet, then Paystack only, then the plugin "later") was ups
 
 **The WordPress plugin isn't a later nice-to-have for the 29% of stores on WooCommerce. It's how Opada reaches anyone at all.** It's the only path where a merchant we've never met can connect both trails without handing us a key that moves money. It comes first. The snippet follows as an add-on for the behaviour trail. Paystack-only waits on Paystack's answer in issue #22.
 
+## What the three businesses said
+
+*From customer conversations in October 2026, before the build. Kept as the original discovery, not a current read of those businesses.*
+
+Three conversations, three industries, one complaint underneath.
+
+| Business | Their words | What is underneath |
+| --- | --- | --- |
+| Healthtech, EMR and consultancy to private hospitals and specialists | Optimizing sales, getting clients | Every sale needs a human to build trust before money moves |
+| Trading business | Inflated market, profit monitoring | Costs move weekly, so margin is invisible until cash runs out |
+| Sales engine | Trust, not been easy to actualize | A stranger will not pay without a conversation first |
+
+Two of the three describe the same thing in different words: in Nigeria, money does not move until a human has vouched for the other side. That human is the bottleneck, and removing it is what the brief asks for.
+
+## The insight
+
+Every Nigerian business has money that stopped halfway, and nobody goes back for it.
+
+A card declined. A cart abandoned at checkout. A DM asking "how much" that nobody answered. An invoice sent three weeks ago. A quote that went quiet. Each one is a buyer who wanted to pay and then stopped.
+
+Nobody chases any of it, because chasing takes a person, and the person is busy selling to whoever is in front of them right now.
+
+The second half of the insight is the part nobody in that room will say out loud: **Paystack is the only party that can prove a Nigerian business is real.** Not reviews, not a website, not a verified badge. Settled transactions over time. Those cannot be faked, and the merchant already owns the record.
+
+So when the reason a payment stalled is trust, the proof needed to unstall it is already sitting in the merchant's Paystack account, unused.
+
+## Why this does not already exist
+
+Paystack detects and labels. It does not recover. That is the gap, and Paystack's own documentation states it.
+
+| What happens | Who does it |
+| --- | --- |
+| Failure reason recorded in gateway\_response | Paystack |
+| Transaction marked abandoned once checkout expires, around 24 hours | Paystack |
+| Retrying, contacting the customer, recovering the sale | Nobody. Paystack's guidance is that the merchant should send follow-up emails. |
+
+Paystack also publishes a full table of customer-side failure reasons: insufficient funds, balance not sufficient, payer reached their limit, expired card, invalid card number, incorrect PIN, PIN tries exceeded, invalid OTP, token expired, transaction not completed. Those map directly onto our six categories, so the diagnosis reads a documented field rather than guessing.
+
+**The distinction that carries the pitch.** Paystack tells you what happened. We work out what to do about it. Knowing "insufficient funds" is not the same as knowing it is the 26th, this buyer is paid on the 28th, and they have completed two orders before. Detection, diagnosis and action are three different things, and only the first exists today.
+
+**Why Paystack would not just build it.** The diagnosis needs context they do not hold. They see one transaction and its error code. We see the merchant's catalogue, policies, trading record and that buyer's history with them. And every naira recovered is a transaction that settles on their rails, so this makes their numbers better rather than competing with them.
+
+Sources: [Paystack customer errors](https://support.paystack.com/en/articles/2124674), [Paystack transaction status values](https://www.mctaba.com/learn/paystack/paystack-transaction-status-values-and-what-each-means)
+
 ## The stall taxonomy
 
 This table is the product. Everything else is plumbing around it.
@@ -173,6 +217,31 @@ So the problem is not only that nobody follows up. **The data merchants have is 
 
 Our poller picked up both within fifteen minutes, with the true reason preserved and no duplicates on repeat runs. That path is built and working.
 
+## The system
+
+The agent runs in the background. The merchant installs it and does nothing else. The buyer never meets a bot.
+
+**Ingest.** Every signal that money stopped moving. Paystack webhooks for failed and abandoned transactions and unpaid invoices, plus a polling sweep of the Transactions API, because charge.failed is reportedly not sent for every failure type and a webhook-only design would miss stalls. Unanswered inbound messages from the channels the merchant already uses. Quotes with no reply.
+
+**Process.** Work out why it stalled. This is the real problem and the real AI work. Insufficient funds is not a card decline, which is not hesitation, which is not "they asked a question and nobody answered". The signals are all there: the Paystack error code, the day of the month, the amount against that buyer's history, whether they came back to the page, what they last said.
+
+**Mandate.** Look up whether the remedy for that reason is permitted. The owner writes the Mandate; Kemi never does. The reason maps to a permitted action, or it maps to nothing and she asks.
+
+**Action.** Execute the permitted remedy without asking anyone, after re-verifying against Paystack immediately beforehand. The remedy for each reason is in the stall taxonomy.
+
+The merchant sees one thing: money that was going to vanish comes back, with a line saying what the agent did and why.
+
+## What runs today
+
+| Part | What it does |
+| --- | --- |
+| Paystack | The money trail: transactions read by a polling sweep of the Transactions API, re-verified before any diagnosis or action. Read-only endpoints only (see `AGENTS.md`). |
+| Groq | The diagnosis model, behind a provider seam, for stalls the deterministic gateway rules can't classify. Sees a redacted view with no customer identity. |
+| Supabase | Postgres for stalls, diagnoses and the behaviour trail, with row-level security on and a scheduled purge enforcing 30-day trail retention. |
+| Vercel | Hosts the app and the behaviour-trail ingest endpoint. |
+
+The live list of what's being built next is the repo's open issues, not this brief.
+
 ## Guardrails
 
 An agent messaging real buyers without a human can damage a merchant's relationships faster than it recovers money. These are part of the pitch, not a later addition.
@@ -196,3 +265,11 @@ One number decides whether this works: **naira recovered that would otherwise ha
 | Time from stall detected to action taken | The under-60-seconds claim, measured |
 | Buyer complaints and opt-outs per 1,000 messages | The guardrails working, or not |
 | Share of model diagnoses returning `INSUFFICIENT_EVIDENCE`, split by whether the behaviour trail was available | Whether the behaviour trail actually helps Kemi tell the reasons apart. It should drop when the trail ships (view `diagnosis_insufficient_evidence_rate`, issue #10) |
+
+## The pitch
+
+> Every business has money that stopped moving. A failed card, an abandoned cart, a question nobody answered. Nobody follows up, because following up needs a person. We built the person. It watches every stalled payment, works out why it stalled, and fixes it by itself, in under a minute, using the merchant's own Paystack history as proof when the problem is trust.
+
+**The hook to open with**
+
+> How much money stopped moving in your business last month? Nobody can tell you. We can, and we can go and get it.
