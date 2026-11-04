@@ -153,7 +153,7 @@ Three conversations, three industries, one complaint underneath.
 | Trading business | Inflated market, profit monitoring | Costs move weekly, so margin is invisible until cash runs out |
 | Sales engine | Trust, not been easy to actualize | A stranger will not pay without a conversation first |
 
-Two of the three describe the same thing in different words: in Nigeria, money does not move until a human has vouched for the other side. That human is the bottleneck, and removing it is what the brief asks for.
+Two of the three describe the same thing in different words: in Nigeria, money does not move until a human has vouched for the other side. That human is the bottleneck, and removing that bottleneck is what Opada is for.
 
 ## The insight
 
@@ -163,7 +163,7 @@ A card declined. A cart abandoned at checkout. A DM asking "how much" that nobod
 
 Nobody chases any of it, because chasing takes a person, and the person is busy selling to whoever is in front of them right now.
 
-The second half of the insight is the part nobody in that room will say out loud: **Paystack is the only party that can prove a Nigerian business is real.** Not reviews, not a website, not a verified badge. Settled transactions over time. Those cannot be faked, and the merchant already owns the record.
+The second half of the insight is the part that is rarely said out loud: **Paystack is the only party that can prove a Nigerian business is real.** Not reviews, not a website, not a verified badge. Settled transactions over time. Those cannot be faked, and the merchant already owns the record.
 
 So when the reason a payment stalled is trust, the proof needed to unstall it is already sitting in the merchant's Paystack account, unused.
 
