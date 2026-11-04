@@ -8,6 +8,11 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+## The product brief
+
+- **`docs/brief.md` is the source of truth for what Opada is and what it promises** (decided 4 November 2026). That covers Kemi, what she sees, the Mandate, the stall taxonomy, the install paths, the guardrails and the measures. The Claude Docs version is a read-only pitch copy: never treat it as the spec, and if the two disagree, `docs/brief.md` wins.
+- **Change the brief in the same PR as any code that changes what it promises**, so the two can't drift. The install paths drifted for weeks while the brief lived where build sessions couldn't read it.
+
 ## Unstall pipeline rules
 
 **Re-verify before every diagnosis or action. No exceptions.** Chasing a customer who has already paid is the worst failure this product can have.
