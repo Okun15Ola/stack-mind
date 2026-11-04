@@ -14,6 +14,7 @@ import {
   liveEntrypointViolations,
   purgeCallViolations,
   firstHandTableViolations,
+  provenanceVetoViolations,
   merchantGateViolations,
   DIAGNOSE_FILE,
   paystackGuardViolations,
@@ -158,5 +159,26 @@ describe("first-hand table guard: negative fixtures", () => {
     ["INSUFFICIENT_EVIDENCE given first-hand evidence", types, { ...base, INSUFFICIENT_EVIDENCE: ["paystack:gateway_response"] }],
   ] as const) {
     it(label, () => bites(firstHandTableViolations(t as readonly string[], table as Record<string, readonly string[]>), label));
+  }
+});
+
+describe("guard fixtures: provenance is never a diagnosis veto", () => {
+  it("the corrected wording passes", () =>
+    assert.deepEqual(
+      provenanceVetoViolations({
+        fixture:
+          "server_relayed and client events are browser assertions, and you may reach a reason on them. Calibrate confidence to how weak the evidence is. Provenance alone is never a reason to return INSUFFICIENT_EVIDENCE; return it only when the facts cannot separate the reasons.",
+      }),
+      [],
+    ));
+  for (const [label, text] of [
+    // The exact wording that shipped in PR 21 and made the trail unable to establish any behavioural reason.
+    ["the PR 21 prompt rule", "server_relayed and client events are browser assertions: they can support a reason but never establish one on their own. If only browser assertions would support a reason, return INSUFFICIENT_EVIDENCE."],
+    ["the PR 21 source note", 'Events with any other provenance are browser assertions: they can support a reason but never establish one on their own.'],
+    ["browser events may not establish", "Relayed events may not establish a reason."],
+    ["IE unless server_observed", "Return INSUFFICIENT_EVIDENCE unless a server_observed event supports the reason."],
+    ["only client evidence means IE", "If only client events point to a reason, answer INSUFFICIENT_EVIDENCE."],
+  ] as const) {
+    it(label, () => bites(provenanceVetoViolations({ fixture: text }), label));
   }
 });

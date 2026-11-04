@@ -204,3 +204,22 @@ export function firstHandTableViolations(types: readonly string[], table: Record
   if ((table.INSUFFICIENT_EVIDENCE ?? []).length) out.push("INSUFFICIENT_EVIDENCE must list no first-hand evidence: it maps to no action");
   return out;
 }
+
+// The diagnosis layer decides WHY; the Mandate decides what may be done.
+// Provenance restricts action only in src/lib/first-hand.ts (Ask-once). A
+// model instruction that turns weak provenance into INSUFFICIENT_EVIDENCE
+// would make the behaviour trail unable to establish NO_TRUST,
+// UNANSWERED_QUESTION or FORGOT at all, and would freeze #10's metric.
+const PROVENANCE_VETO = [
+  /never establish/i,
+  /only (?:browser|relayed|client)[^.]*\bINSUFFICIENT_EVIDENCE/i,
+  /(?:browser|relayed|client)[^.]*(?:cannot|can ?not|can't|must not|may not)[^.]*(?:establish|support|reach|conclude)/i,
+  /INSUFFICIENT_EVIDENCE[^.]*(?:if|when|unless)[^.]*(?:server_observed|first-hand|browser assertion)/i,
+];
+
+export function provenanceVetoViolations(texts: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const [name, text] of Object.entries(texts))
+    for (const re of PROVENANCE_VETO) if (re.test(text)) out.push(`${name}: provenance used as a diagnosis veto (${re})`);
+  return out;
+}
