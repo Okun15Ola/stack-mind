@@ -1,6 +1,6 @@
 import { verifyEmitterRequest, type EmitterKey, type EmitterKeyStore } from "@/lib/behaviour/auth";
 import { retentionStatus, type RetentionCheck } from "@/lib/behaviour/retention";
-import { MAX_BODY_BYTES, parseBatch, type BehaviourEvent, type RejectionCode } from "@/lib/behaviour/contract";
+import { MAX_BODY_BYTES, parseBatch, type BehaviourEvent, type EventSource, type RejectionCode } from "@/lib/behaviour/contract";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 // POST /api/v1/behaviour-events, independent of Next so it can be tested.
@@ -8,7 +8,8 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 // parsing. Nothing is stored unless the request is authenticated and the
 // 30-day purge is running.
 
-export type StoredRow = BehaviourEvent & { merchant_id: string; emitter_id: string; source: "server" };
+// `observed` is not stored: it's folded into `source`.
+export type StoredRow = Omit<BehaviourEvent, "observed"> & { merchant_id: string; emitter_id: string; source: EventSource };
 
 export interface EventSink {
   // Inserts rows, ignoring any (merchant_id, event_id) already stored.
@@ -48,9 +49,19 @@ export async function handleBehaviourEvents(
   return { status: 202, body: { accepted: stored, duplicates: rows.length - stored, rejected } };
 }
 
-// `source` is set here, from the credential, never from the request body.
+// `source` is set here, from the credential plus the emitter's declaration,
+// never named by the request body. A signed (oek_) request can only yield
+// server_observed (declared "server", already checked as possible for the
+// type) or server_relayed (declared "browser", or not declared). Publishable
+// keys (opk_, not built yet) will always yield "client".
+export function sourceFor(e: BehaviourEvent): EventSource {
+  return e.observed === "server" ? "server_observed" : "server_relayed";
+}
+
 function toRow(e: BehaviourEvent, key: EmitterKey): StoredRow {
-  return { ...e, merchant_id: key.merchant_id, emitter_id: key.key_id, source: "server" };
+  const { observed: _observed, ...rest } = e;
+  void _observed;
+  return { ...rest, merchant_id: key.merchant_id, emitter_id: key.key_id, source: sourceFor(e) };
 }
 
 export function supabaseEmitterKeyStore(): EmitterKeyStore {

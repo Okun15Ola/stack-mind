@@ -13,6 +13,7 @@ import {
   entrypointNamingViolations,
   liveEntrypointViolations,
   purgeCallViolations,
+  firstHandTableViolations,
   merchantGateViolations,
   DIAGNOSE_FILE,
   paystackGuardViolations,
@@ -142,4 +143,20 @@ describe("merchant gate guard: negative fixtures", () => {
     it(label, () => bites(merchantGateViolations([diag(body)]), label));
   }
   it("loadTrail renamed or gone", () => bites(merchantGateViolations([{ path: DIAGNOSE_FILE, text: "export {}" }]), "no loadTrail"));
+});
+
+describe("first-hand table guard: negative fixtures", () => {
+  const types = ["paystack:gateway_response", "server_observed:question_asked"];
+  const base = { CARD_FAILING: ["paystack:gateway_response"], UNANSWERED_QUESTION: ["server_observed:question_asked"], NO_TRUST: [], INSUFFICIENT_EVIDENCE: [] };
+  it("the real shape passes", () => assert.deepEqual(firstHandTableViolations(types, base), []));
+  for (const [label, t, table] of [
+    ["a relayed event declared first-hand", [...types, "server_relayed:info_viewed"], base],
+    ["a client event declared first-hand", [...types, "client:question_asked"], base],
+    ["the provider-relayed checkout log declared first-hand", [...types, "paystack:checkout_log"], base],
+    ["NO_TRUST counting a server_observed payment_started", [...types, "server_observed:payment_started"], { ...base, NO_TRUST: ["server_observed:payment_started"] }],
+    ["a reason listing an undeclared type", types, { ...base, FORGOT: ["server_observed:checkout_left"] }],
+    ["INSUFFICIENT_EVIDENCE given first-hand evidence", types, { ...base, INSUFFICIENT_EVIDENCE: ["paystack:gateway_response"] }],
+  ] as const) {
+    it(label, () => bites(firstHandTableViolations(t as readonly string[], table as Record<string, readonly string[]>), label));
+  }
 });

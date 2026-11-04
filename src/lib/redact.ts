@@ -17,7 +17,7 @@
 // No PII value is ever put into an error message: PiiLeakError carries only
 // the kind of leak and the field path, so it is safe to log.
 
-import { CLIENT_EVENTS_NOTE, trailFacts, type TrailFact, type TrailSelection } from "@/lib/behaviour/trail";
+import { sourcesNote, trailFacts, type TrailFact, type TrailSelection } from "@/lib/behaviour/trail";
 
 // Separators people put between digits: spaces (incl. NBSP), dots, dashes of
 // every width, slashes, underscores, brackets.
@@ -110,8 +110,14 @@ function hasValue(value: unknown): boolean {
   return true;
 }
 
-export function section<T extends object>(fields: T | null | undefined, why: string): Section<T> {
-  if (fields && Object.values(fields).some(hasValue)) return { available: true, ...fields };
+// `meta` (e.g. a provenance label) is attached only when the section is
+// available, and never counts towards availability: a label is not evidence.
+export function section<T extends object, M extends object = Record<never, never>>(
+  fields: T | null | undefined,
+  why: string,
+  meta?: M,
+): Section<T & M> {
+  if (fields && Object.values(fields).some(hasValue)) return { available: true, ...fields, ...(meta ?? {}) } as Section<T & M>;
   return { available: false, why };
 }
 // availability:end
@@ -138,7 +144,10 @@ export type ModelInput = {
     bank: string | null;
     country_code: string | null;
   }>;
+  // Paystack's checkout log is recorded by Paystack's checkout script in the
+  // buyer's browser and relayed by Paystack: provider-relayed, not first-hand.
   checkout: Section<{
+    provenance: "provider_relayed";
     time_spent_seconds: number | null;
     attempts: number | null;
     errors: number | null;
@@ -202,7 +211,7 @@ export function buildModelInput(
     payment_channel: str(tx.channel),
     is_subscription_renewal: stall.event_type === "invoice.payment_failed",
     card: section(card, UNAVAILABLE.card),
-    checkout: section(checkout, UNAVAILABLE.checkout),
+    checkout: section(checkout, UNAVAILABLE.checkout, { provenance: "provider_relayed" as const }),
     behaviour_trail: behaviourTrailSection(trail),
   };
 }
@@ -369,6 +378,6 @@ export function assertNoPii(input: unknown, known: string[]): void {
 function behaviourTrailSection(trail: TrailSelection): ModelInput["behaviour_trail"] {
   if (trail.kind === "no_ref") return section<{ events: TrailFact[]; note: string | null }>(null, UNAVAILABLE.behaviourTrail);
   const events = trail.kind === "events" ? trailFacts(trail.events) : [];
-  const note = events.some((e) => e.source === "client") ? CLIENT_EVENTS_NOTE : null;
+  const note = sourcesNote(events);
   return section({ events, note }, UNAVAILABLE.behaviourTrailNoEvents);
 }

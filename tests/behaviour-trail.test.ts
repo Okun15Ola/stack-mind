@@ -1,7 +1,7 @@
 // The join (issue #12 section 1) and the trail in model input.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { CLIENT_EVENTS_NOTE, selectTrailEvents, trailRefsFromTransaction, type StoredEvent } from "@/lib/behaviour/trail";
+import { SOURCE_NOTES, selectTrailEvents, trailSources, trailRefsFromTransaction, type StoredEvent } from "@/lib/behaviour/trail";
 import { diagnoseStall, type DiagnosisRow, type DiagnosisStore, type StallForDiagnosis } from "@/lib/diagnose";
 import type { DiagnosisModel } from "@/lib/diagnosis-model";
 import { evidenceGaps } from "@/lib/evidence";
@@ -26,7 +26,7 @@ function ev(type: StoredEvent["type"], at: string, extra: Partial<StoredEvent> =
     session_ref: null,
     device: "mobile",
     properties: {},
-    source: "server",
+    source: "server_observed",
     ...extra,
   };
 }
@@ -108,10 +108,10 @@ describe("the trail in model input", () => {
     assert.ok(input.behaviour_trail.available);
     const trail = input.behaviour_trail as Extract<ModelInput["behaviour_trail"], { available: true }>;
     assert.deepEqual(
-      trail.events.map((e) => [e.type, e.at_second, e.source, e.kind ?? e.stage ?? null]),
+      trail.events.map((e) => [e.type, e.at_second, e.provenance, e.kind ?? e.stage ?? null]),
       [
-        ["checkout_started", 0, "server", null],
-        ["info_viewed", 40, "server", "refund_or_returns"],
+        ["checkout_started", 0, "server_observed", null],
+        ["info_viewed", 40, "server_observed", "refund_or_returns"],
         ["payment_closed", 130, "client", "otp_or_pin"],
       ],
     );
@@ -120,12 +120,35 @@ describe("the trail in model input", () => {
     assert.doesNotThrow(() => assertNoPii(input, knownIdentifiers(stall)));
   });
 
-  it("states that client events are forgeable when any are present, and not otherwise", () => {
+  it("states plainly what each non-first-hand source means, only when present, with no numeric weight", () => {
+    const relayedOnly = buildModelInput(stall, stall.gateway_response, {
+      kind: "events",
+      joinedOn: "session_ref",
+      events: [events[0], { ...events[1], source: "server_relayed" }],
+    });
+    const note1 = (relayedOnly.behaviour_trail as { note: string | null }).note!;
+    assert.ok(note1.includes(SOURCE_NOTES.common) && note1.includes(SOURCE_NOTES.server_relayed));
+    assert.ok(!note1.includes(SOURCE_NOTES.client), "the client note appears without client events");
+
     const withClient = buildModelInput(stall, stall.gateway_response, { kind: "events", joinedOn: "session_ref", events });
-    assert.equal((withClient.behaviour_trail as { note: string | null }).note, CLIENT_EVENTS_NOTE);
-    const serverOnly = buildModelInput(stall, stall.gateway_response, { kind: "events", joinedOn: "session_ref", events: events.slice(0, 2) });
-    assert.equal((serverOnly.behaviour_trail as { note: string | null }).note, null);
+    const note2 = (withClient.behaviour_trail as { note: string | null }).note!;
+    assert.ok(note2.includes(SOURCE_NOTES.client));
+    assert.ok(!note2.includes(SOURCE_NOTES.server_relayed), "the relayed note appears without relayed events");
+
+    const observedOnly = buildModelInput(stall, stall.gateway_response, { kind: "events", joinedOn: "session_ref", events: events.slice(0, 2) });
+    assert.equal((observedOnly.behaviour_trail as { note: string | null }).note, null);
+
+    // No weights, scores or confidences on events: provenance is a label, not a number.
+    const sent = JSON.stringify(withClient.behaviour_trail);
+    assert.ok(!/"(weight|trust|score|confidence)"/.test(sent));
+    assert.notEqual(SOURCE_NOTES.server_relayed, SOURCE_NOTES.client, "relayed and client must stay distinguishable");
   });
+
+  it("counts joined events per source", () => {
+    assert.deepEqual(trailSources(events), { server_observed: 2, server_relayed: 0, client: 1 });
+    assert.deepEqual(trailSources([]), { server_observed: 0, server_relayed: 0, client: 0 });
+  });
+
 
   it("no ref and no events are different gaps, each stated, and still listed as a behaviour_trail gap", () => {
     const noRef = buildModelInput(stall, stall.gateway_response, { kind: "no_ref" });

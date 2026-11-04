@@ -63,6 +63,26 @@ Opada-Signature: v1=<base64url Ed25519 signature of "<timestamp>.<raw body>">
 - **On `503 retention_overdue`: drop the events, log locally, and do NOT retry or queue them.** This status means Opada has deliberately stopped collecting, because it can't currently prove it is deleting old events. Retrying defeats that, and turns one stalled cleanup job into a retry storm from every emitter. Log the drop (status code and count only, never the events or the buyer), then carry on. Collection resumes on its own once Opada's purge is running again; no action is needed on your side.
 - **Other failures** (network errors, timeouts, `5xx` other than `retention_overdue`): drop and log too. The trail is best-effort evidence, and no event is worth slowing a checkout or building a local backlog for.
 
+### Declaring what your server saw: `observed`
+
+Each event may carry `"observed": "server"` or `"observed": "browser"`. Leave it out and Opada treats the event as `"browser"`.
+
+- **Declare `"server"` only for an event your server itself handled**: you initialised the Paystack transaction, created the checkout or order row, or received a form POST. Anything the browser reported to you (a page view, a tab closing, a popup closing) is `"browser"`, even though your server is the one sending it.
+- **`observed` can only lower trust, never raise it.** Opada stores `server_observed` for a signed request declaring `"server"`, and `server_relayed` for everything else. Claiming `"server"` for an event a server cannot see is rejected (`server_observation_not_possible`), not downgraded:
+
+| Event | `observed: "server"` allowed? |
+| --- | --- |
+| `checkout_started` | yes (the checkout or order is created server-side) |
+| `payment_started` | yes (the Paystack transaction is initialised server-side) |
+| `question_asked` with `channel: "form"` | yes (the form POST reaches your server) |
+| `question_asked`, any other channel | no |
+| `info_viewed` | no (a page view is a browser fact) |
+| `checkout_left` | no |
+| `payment_closed` | no (the popup closes in the browser) |
+
+- **Why it matters:** an Ask-once action needs first-hand evidence for the reason it acts on, and `server_relayed` evidence never counts. Overclaiming `"server"` is how the trail would lie about itself, so don't.
+
+
 ```js
 import { createPrivateKey, sign } from "node:crypto";
 
