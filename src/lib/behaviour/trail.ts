@@ -109,7 +109,7 @@ export function trailFacts(events: StoredEvent[]): TrailFact[] {
 // and flattening them into one number would hide that.
 export const SOURCE_NOTES = {
   common:
-    'Events with "provenance": "server_observed" were seen by the merchant\'s own server during its own work. Events with any other provenance are browser assertions: they can support a reason but never establish one on their own.',
+    'Events with "provenance": "server_observed" were seen by the merchant\'s own server during its own work. Events with any other provenance are browser assertions: a reason may rest on them, with confidence lowered to match.',
   server_relayed:
     '"server_relayed" events were reported by the buyer\'s browser and passed on by the merchant\'s server, which vouches that it sent them, not that they happened. Anyone able to call the merchant\'s own endpoint could have faked one.',
   client:

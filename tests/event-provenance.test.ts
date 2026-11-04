@@ -10,9 +10,11 @@ import { diagnoseStall, type DiagnosisRow, type DiagnosisStore, type StallForDia
 import type { DiagnosisModel } from "@/lib/diagnosis-model";
 import { FIRST_HAND_FOR_REASON, FIRST_HAND_TYPES, askOnceAllowed, firstHandEvidence } from "@/lib/first-hand";
 import { OUTCOMES } from "@/lib/reasons";
+import { SYSTEM_PROMPT } from "@/lib/diagnosis-model";
+import { SOURCE_NOTES } from "@/lib/behaviour/trail";
 import { buildModelInput } from "@/lib/redact";
 import type { VerifiedStall } from "@/lib/reverify";
-import { firstHandTableViolations } from "./guards";
+import { firstHandTableViolations, provenanceVetoViolations } from "./guards";
 
 const NOW = new Date("2026-11-03T10:00:00Z");
 const base = { event_id: "01JBX7Q8M2ZK5D3W0V9T4R6Y1A", occurred_at: "2026-11-03T09:59:00Z", buyer_ref: "q3V9mT0b2xYkLw8RfA1sZe" };
@@ -229,5 +231,84 @@ describe("each diagnosis stores what it rested on, computed by code", () => {
     await diagnoseStall(verified(row), { store: store(row, [], saved), model, now: () => NOW2, log: () => {} });
     assert.deepEqual(saved[0].first_hand_evidence, []);
     assert.deepEqual(saved[0].trail_sources, { server_observed: 0, server_relayed: 0, client: 0 });
+  });
+});
+
+// Kemi decides why; the Mandate decides what she may do, and what she may do
+// must not change what she concludes. Provenance restricts ACTION (the
+// Ask-once gate above), never the diagnosis.
+describe("provenance lowers confidence, it never vetoes a diagnosis", () => {
+  it("the system prompt and the source notes carry no provenance veto", () => {
+    assert.deepEqual(provenanceVetoViolations({ SYSTEM_PROMPT, ...SOURCE_NOTES }), []);
+  });
+
+  it("the prompt tells the model it may reach a reason on browser assertions, at calibrated confidence", () => {
+    assert.match(SYSTEM_PROMPT, /you may reach a reason on them/);
+    assert.match(SYSTEM_PROMPT, /Calibrate confidence to how weak the evidence is/);
+    assert.match(SYSTEM_PROMPT, /Provenance alone is never a reason to return INSUFFICIENT_EVIDENCE/);
+    assert.match(SYSTEM_PROMPT, /must not change what you conclude/);
+  });
+
+  it("a relayed-only trail that clearly indicates one reason yields that reason at low confidence, not INSUFFICIENT_EVIDENCE", async () => {
+    const NOW3 = new Date("2026-11-04T10:10:00Z");
+    const BUYER = "q3V9mT0b2xYkLw8RfA1sZe";
+    const row: StallForDiagnosis = {
+      id: "s5",
+      status: "new",
+      gateway_response: "The transaction was not completed",
+      amount: 1,
+      currency: "NGN",
+      event_type: "transaction.abandoned",
+      customer_identifier: null,
+      stalled_at: "2026-11-04T10:06:00Z",
+      payload: { metadata: { opada_buyer_ref: BUYER } },
+    };
+    const at = (m: number) => `2026-11-04T10:0${m}:00Z`;
+    const relayed = (i: number, type: StoredEvent["type"], m: number, properties: Record<string, string> = {}): StoredEvent => ({
+      event_id: `01JBX7Q8M2ZK5D3W0V9T4R6YR${i}`,
+      type,
+      occurred_at: at(m),
+      buyer_ref: BUYER,
+      session_ref: null,
+      device: "mobile",
+      properties,
+      source: "server_relayed",
+    });
+    // Read the refund policy twice, asked through the chat widget, left.
+    const events = [
+      relayed(1, "checkout_started", 0),
+      relayed(2, "info_viewed", 1, { kind: "refund_or_returns" }),
+      relayed(3, "question_asked", 2, { channel: "whatsapp" }),
+      relayed(4, "info_viewed", 3, { kind: "refund_or_returns" }),
+      relayed(5, "checkout_left", 4, { reason: "tab_hidden" }),
+    ];
+    let seen: unknown;
+    const model: DiagnosisModel = {
+      classify: async (input) => {
+        seen = input;
+        return { output: { reason: "UNANSWERED_QUESTION", confidence: 0.4, rationale: "Read the refund policy twice and asked a question, all browser-reported." }, model: "fake:m", refusals: [] };
+      },
+    };
+    const saved: DiagnosisRow[] = [];
+    await diagnoseStall(
+      { id: row.id, reference: "r", paystackStatus: "abandoned", gatewayResponse: row.gateway_response, verifiedAt: new Date(NOW3.getTime() - 30_000) } as VerifiedStall,
+      {
+        store: { loadStall: async () => row, saveDiagnosis: async (r) => void saved.push(r), flagBlocked: async () => {}, loadBehaviourEvents: async () => events, countMerchants: async () => 1 },
+        model,
+        now: () => NOW3,
+        log: () => {},
+      },
+    );
+    // The model saw the relayed trail, labelled as such.
+    const trail = (seen as { behaviour_trail: { available: boolean; events: { provenance: string }[] } }).behaviour_trail;
+    assert.equal(trail.available, true);
+    assert.ok(trail.events.length === 5 && trail.events.every((e) => e.provenance === "server_relayed"));
+    // Nothing between the model and the store turns weak provenance into INSUFFICIENT_EVIDENCE.
+    assert.equal(saved[0].reason, "UNANSWERED_QUESTION");
+    assert.ok(saved[0].confidence < 0.5);
+    assert.deepEqual(saved[0].trail_sources, { server_observed: 0, server_relayed: 5, client: 0 });
+    // Provenance still restricts action, in the gate and only there: Standing yes, Ask-once no.
+    assert.deepEqual(saved[0].first_hand_evidence, []);
+    assert.equal(askOnceAllowed({ reason: "UNANSWERED_QUESTION", first_hand_evidence: saved[0].first_hand_evidence }), false);
   });
 });
